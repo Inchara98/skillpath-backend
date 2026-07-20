@@ -42,6 +42,17 @@ const BAP_URI = 'http://onix-bap:8081/bap/receiver';
 const BPP_ID = 'bpp.example.com';
 const BPP_URI = 'http://onix-bpp:8082/bpp/receiver';
 
+// This is DIFFERENT from BPP_URI above -- BPP_URI is the Beckn protocol
+// address (goes through onix-bap/onix-bpp), used for the actual Beckn
+// discover/select/init/confirm flow. BPP_BASE_URL below is a plain
+// direct HTTP address used ONLY for the handful of server-to-server
+// calls that aren't part of the Beckn flow itself (e.g. approve/reject
+// buttons, reading the provider's course catalog for tier lookups).
+// Locally both servers run on the same machine so "localhost" works;
+// once deployed separately (e.g. to Render), this MUST be set to
+// course-bpp-server's real public URL via an environment variable.
+const BPP_BASE_URL = process.env.BPP_BASE_URL || 'http://localhost:3002';
+
 // =====================================================================
 // ---- OTP auth (demo-grade: fixed code, no expiry, no real SMS) ----
 // =====================================================================
@@ -336,7 +347,7 @@ function handleCallback(action, incoming) {
 // Gold, not a hardcoded Silver.
 async function updateTierForCompletedCourse(learner, courseId) {
   try {
-    const res = await fetch('http://sandbox-bpp:3002/api/state');
+    const res = await fetch(`${BPP_BASE_URL}/api/state`);
     const providerState = await res.json();
     const course = providerState.catalog.find((c) => c.id === courseId);
     if (course && course.unlocksTier) {
@@ -1049,7 +1060,10 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
-const PORT = 3001;
+// Render (and most cloud hosts) assign their own port and expect the app
+// to listen on it via the PORT env var -- 3001 is only used as a fallback
+// for running this locally on your own machine.
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`demo-bap server running on port ${PORT}`);
 });

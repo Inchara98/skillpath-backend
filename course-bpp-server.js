@@ -552,7 +552,7 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const PORT = 3002;
+const PORT = process.env.PORT || 3002;
 server.listen(PORT, () => {
   console.log(`course-bpp demo server running on port ${PORT}`);
 });
