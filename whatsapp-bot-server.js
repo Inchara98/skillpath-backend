@@ -204,6 +204,7 @@ const server = http.createServer((req, res) => {
     const mode = url.searchParams.get('hub.mode');
     const token = url.searchParams.get('hub.verify_token');
     const challenge = url.searchParams.get('hub.challenge');
+    console.log(`[wa-bot] webhook verification attempt: mode=${mode} token=${token} expectedToken=${WA_VERIFY_TOKEN}`);
     if (mode === 'subscribe' && token === WA_VERIFY_TOKEN) {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end(challenge);
