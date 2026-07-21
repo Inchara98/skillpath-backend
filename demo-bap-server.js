@@ -30,8 +30,12 @@
 const http = require('http');
 const crypto = require('crypto');
 
-// ---- Where onix-bap lives on the Docker network ----
-const ONIX_BAP_CALLER = 'http://onix-bap:8081/bap/caller';
+// Where onix-bap lives -- 'onix-bap' is a Docker container name, only
+// resolvable when this server runs on the same Docker network (e.g.
+// your laptop). Once deployed elsewhere (Render, etc.), this MUST be
+// set via the ONIX_BAP_CALLER env var to wherever onix-bap is actually
+// reachable from the internet (e.g. an ngrok tunnel to your laptop).
+const ONIX_BAP_CALLER = process.env.ONIX_BAP_CALLER || 'http://onix-bap:8081/bap/caller';
 
 // ---- Fixed network details for this small sandbox network ----
 // (In a bigger network these would be discovered dynamically; here
@@ -897,6 +901,38 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // A minimal privacy policy page -- needed to satisfy Meta's app
+  // "Publish" requirement for the WhatsApp bot. This is a genuine,
+  // if brief, description of what this prototype actually does with
+  // data -- not filler text.
+  if (req.method === 'GET' && path === '/privacy-policy') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<!DOCTYPE html>
+<html>
+<head><title>Bana Pele -- Privacy Policy</title></head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 40px auto; line-height: 1.5;">
+  <h1>Privacy Policy -- Bana Pele Enrollment Prototype</h1>
+  <p>This is a prototype application for testing training-program enrollment
+  via WhatsApp and a companion mobile app. It is not yet a production
+  service.</p>
+  <h2>What we collect</h2>
+  <p>Your name and phone number, submitted when you use the app or message
+  our WhatsApp bot, along with your enrollment and completion status for
+  training programs.</p>
+  <h2>How it's used</h2>
+  <p>Solely to operate the enrollment flow -- letting you discover training
+  programs, enroll, and track completion/certification status.</p>
+  <h2>Storage</h2>
+  <p>Data is currently stored only in server memory for testing purposes and
+  is not persisted to a permanent database.</p>
+  <h2>Contact</h2>
+  <p>This is a prototype; for questions, contact the development team
+  directly.</p>
+</body>
+</html>`);
     return;
   }
 
