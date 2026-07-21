@@ -510,6 +510,27 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Lets the admin click "Forward to experts" in the provider dashboard
+  // instead of typing "forward <id>" over WhatsApp -- same underlying action.
+  const dashboardForwardMatch = url.pathname.match(/^\/api\/centre-requests\/([a-zA-Z0-9-]+)\/forward$/);
+  if (req.method === 'POST' && dashboardForwardMatch) {
+    if (!ADMIN_PHONE) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ADMIN_PHONE is not configured on this server yet.' }));
+      return;
+    }
+    handleForward(dashboardForwardMatch[1])
+      .then(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'forwarded' }));
+      })
+      .catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', bapBaseUrl: BAP_BASE_URL }));
