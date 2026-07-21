@@ -110,7 +110,16 @@ function isAdmin(phone) {
 // just skips it and falls back to the old escalate-everything behaviour,
 // so the bot degrades gracefully rather than breaking.
 
-async function callClaude(systemPrompt, userMessage, maxTokens = 400) {
+async function callClaude(systemPrompt, userMessage, { maxTokens = 500, useWebSearch = false } = {}) {
+  const body = {
+    model: 'claude-sonnet-5',
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userMessage }],
+  };
+  if (useWebSearch) {
+    body.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
+  }
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -118,17 +127,19 @@ async function callClaude(systemPrompt, userMessage, maxTokens = 400) {
       'anthropic-version': '2023-06-01',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: 'claude-sonnet-5',
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
-    }),
+    body: JSON.stringify(body),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error((data.error && data.error.message) || `Claude API error (${resp.status})`);
-  const textBlock = (data.content || []).find((b) => b.type === 'text');
-  return textBlock ? textBlock.text.trim() : '';
+  // With web search enabled, the response can contain several content
+  // blocks (search queries, search results, then the final answer) --
+  // join every text block together to get the complete reply.
+  const text = (data.content || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+  return text;
 }
 
 // Condensed from Bana-PeleBlueprint-for-2030-4_2_26.pdf (Feb 2026) --
@@ -174,9 +185,15 @@ specifics with the local Provincial Education Department or municipality.`;
 const CENTRE_HELP_SYSTEM_PROMPT = `You are a helpful assistant for Bana Pele, South Africa's national early learning initiative, helping people who want to set up or improve an early learning centre.
 
 You are given ONE message from a learner. Decide:
-- If it is a QUESTION seeking information or advice (e.g. "what type of centre should I set up", "how do I get funding", "what are the requirements"), answer it directly and helpfully in 2-4 short sentences, using the reference knowledge below plus your own general knowledge. Keep it warm, plain-language and practical for a first-time practitioner in South Africa. Do not use markdown formatting -- this reply goes straight into a WhatsApp text message.
+- If it is a QUESTION seeking information or advice (e.g. "what type of centre should I set up", "how do I get funding", "what are the requirements"), answer it directly and helpfully using the reference knowledge below, your own general knowledge, and web search when it would give more current or specific detail (e.g. exact subsidy amounts, current program pages, specific eligibility rules). Keep the tone warm and plain-language for a first-time practitioner in South Africa.
 - If it is NOT a question but instead a description of what kind of help they personally need (e.g. "I need help finding a location and funding", "I want to open a centre in my village but don't know where to start"), reply with EXACTLY the single word: ESCALATE
 - If genuinely ambiguous, prefer answering as a question rather than escalating.
+
+FORMATTING (this reply goes straight into a WhatsApp text message, so no markdown):
+- Write in short sentences.
+- If the answer has multiple conditions, steps, requirements or options, list them one per line starting with "- ", instead of packing them into one long sentence.
+- Keep the whole reply under about 6 short lines total.
+- If you used web search and found a specific source worth mentioning, name it in plain text (e.g. "According to the Department of Basic Education website...") -- don't include raw URLs or markdown links.
 
 Reference knowledge:
 ${BANA_PELE_KNOWLEDGE}`;
@@ -184,7 +201,13 @@ ${BANA_PELE_KNOWLEDGE}`;
 // Used as a last resort, when a message doesn't match ANY known command
 // (menu numbers, "status", "complete N", etc). Tries to actually help
 // with a real answer instead of just showing the menu again.
-const GENERAL_SYSTEM_PROMPT = `You are a helpful WhatsApp assistant for Bana Pele, South Africa's national early learning initiative. You help early learning practitioners and parents with plain-language questions about early childhood development, setting up learning centres, funding, and related topics. Answer in 2-4 short sentences, warm and practical, no markdown formatting (this reply goes straight into a WhatsApp text message). If the message is totally unrelated to early learning/ECD, say briefly that you can't help with that specific thing, and remind them they can type "menu" to see what you can do.
+const GENERAL_SYSTEM_PROMPT = `You are a helpful WhatsApp assistant for Bana Pele, South Africa's national early learning initiative. You help early learning practitioners and parents with plain-language questions about early childhood development, setting up learning centres, funding, and related topics. Use the reference knowledge below, your own general knowledge, and web search when it would give more current or specific detail. If the message is totally unrelated to early learning/ECD, say briefly that you can't help with that specific thing, and remind them they can type "menu" to see what you can do.
+
+FORMATTING (this reply goes straight into a WhatsApp text message, so no markdown):
+- Write in short sentences.
+- If the answer has multiple conditions, steps, requirements or options, list them one per line starting with "- ", instead of packing them into one long sentence.
+- Keep the whole reply under about 6 short lines total.
+- If you used web search and found a specific source worth mentioning, name it in plain text (e.g. "According to the Department of Basic Education website...") -- don't include raw URLs or markdown links.
 
 Reference knowledge:
 ${BANA_PELE_KNOWLEDGE}`;
@@ -403,7 +426,7 @@ async function handleIncomingMessage(from, text) {
 
     if (ANTHROPIC_API_KEY) {
       try {
-        const reply = await callClaude(CENTRE_HELP_SYSTEM_PROMPT, trimmed);
+        const reply = await callClaude(CENTRE_HELP_SYSTEM_PROMPT, trimmed, { useWebSearch: true });
         if (reply !== 'ESCALATE') {
           return sendWhatsAppMessage(
             from,
@@ -515,7 +538,7 @@ async function handleIncomingMessage(from, text) {
 
   if (ANTHROPIC_API_KEY) {
     try {
-      const reply = await callClaude(GENERAL_SYSTEM_PROMPT, trimmed);
+      const reply = await callClaude(GENERAL_SYSTEM_PROMPT, trimmed, { useWebSearch: true });
       session.awaitingCourseSelection = false;
       session.awaitingCentreDescription = false;
       return sendWhatsAppMessage(from, reply);
