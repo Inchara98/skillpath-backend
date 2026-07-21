@@ -413,6 +413,19 @@ async function handleIncomingMessage(from, text) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
+  // Open up CORS on every response, since the provider dashboard (a
+  // static site on its own Render origin) needs to call this API
+  // directly from the browser, same reasoning as course-bpp-server.js.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/webhook') {
     const mode = url.searchParams.get('hub.mode');
     const token = url.searchParams.get('hub.verify_token');
@@ -454,6 +467,46 @@ const server = http.createServer((req, res) => {
         console.error('[wa-bot] failed to parse webhook payload:', err.message);
       }
     });
+    return;
+  }
+
+  // Lets the provider dashboard (a completely different app/origin) show
+  // open centre-setup requests, same data an admin would otherwise only
+  // see via a WhatsApp notification.
+  if (req.method === 'GET' && url.pathname === '/api/centre-requests') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        requests: centreRequests.map((r) => ({
+          id: r.id,
+          learnerName: r.learnerName,
+          description: r.description,
+          status: r.status,
+          assignedName: r.assignedName,
+        })),
+      })
+    );
+    return;
+  }
+
+  // Lets the admin click "Assign to me" in the provider dashboard instead
+  // of typing "assign me <id>" over WhatsApp -- same underlying action.
+  const dashboardAssignMatch = url.pathname.match(/^\/api\/centre-requests\/([a-zA-Z0-9-]+)\/assign-admin$/);
+  if (req.method === 'POST' && dashboardAssignMatch) {
+    if (!ADMIN_PHONE) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'ADMIN_PHONE is not configured on this server yet.' }));
+      return;
+    }
+    handleAssign(dashboardAssignMatch[1], ADMIN_PHONE, 'Admin')
+      .then(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'assigned' }));
+      })
+      .catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      });
     return;
   }
 
