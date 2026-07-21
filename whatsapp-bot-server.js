@@ -44,6 +44,11 @@
 //   ADMIN_PHONE            - YOUR WhatsApp number (digits only, no "+"),
 //                           e.g. 15551234567 -- gets notified of new
 //                           centre-setup requests and can use admin commands
+//   ANTHROPIC_API_KEY      - enables natural-language answers for free-text
+//                           questions (e.g. "what type of centre should I
+//                           set up") instead of always escalating to a
+//                           human. Optional -- bot still works without it,
+//                           just falls back to escalating everything.
 //   PORT                  - Render sets this automatically
 
 const http = require('http');
@@ -53,6 +58,7 @@ const WA_PHONE_NUMBER_ID = process.env.WA_PHONE_NUMBER_ID || '';
 const WA_VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || 'bana-enroll-verify-2026';
 const BAP_BASE_URL = process.env.BAP_BASE_URL || 'http://localhost:3001';
 const ADMIN_PHONE = process.env.ADMIN_PHONE || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const PORT = process.env.PORT || 4000;
 const GRAPH_VERSION = 'v20.0';
 const DEMO_OTP = '123456'; // matches demo-bap-server.js's fixed demo code
@@ -97,6 +103,91 @@ function displayName(phone) {
 function isAdmin(phone) {
   return !!ADMIN_PHONE && phone === ADMIN_PHONE;
 }
+
+// ---- Natural-language answers, using Claude ----
+// Optional layer on top of everything else in this file. If
+// ANTHROPIC_API_KEY isn't set, every code path below that calls this
+// just skips it and falls back to the old escalate-everything behaviour,
+// so the bot degrades gracefully rather than breaking.
+
+async function callClaude(systemPrompt, userMessage, maxTokens = 400) {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error((data.error && data.error.message) || `Claude API error (${resp.status})`);
+  const textBlock = (data.content || []).find((b) => b.type === 'text');
+  return textBlock ? textBlock.text.trim() : '';
+}
+
+// Condensed from Bana-PeleBlueprint-for-2030-4_2_26.pdf (Feb 2026) --
+// only the parts relevant to someone asking practical questions about
+// setting up or running a learning centre. Not the full document; kept
+// short deliberately since this gets sent on every relevant API call.
+const BANA_PELE_KNOWLEDGE = `Key facts from the Bana Pele Shared Blueprint (Feb 2026), South Africa's national early learning strategy:
+
+TYPES OF EARLY LEARNING PROGRAMMES (ELPs) -- the "mixed-modality model":
+- Centre-based: a dedicated space (a room, hall, or building) where children come daily
+- Home-based: run out of a practitioner's own home, smaller scale
+- Mobile: services that travel to reach children in remote areas
+- Community-based: playgroups, toy libraries, run in shared community spaces
+There is no single "right" type -- the choice depends on the space, funding and community available.
+
+REGISTRATION TIERS: Bronze -> Silver -> Gold, each with increasing health/safety
+standards. Registration is done through the DBE (Department of Basic Education),
+supported by the Bana Pele Mass Registration Drive and the ECD Red Tape Reduction
+Toolkit to simplify the process.
+
+FUNDING SOURCES:
+- ECD Subsidy -- ongoing government funding per child, tied to registration tier
+- ECCE Livelihoods Fund -- start-up capital for new practitioners
+- ECD Maintenance Grant -- for facility repairs/upgrades
+- Bana Pele Accelerator Fund -- for scaling existing quality access
+
+TYPICAL JOURNEY (like "Naledi's Journey" in the Blueprint):
+1. Contact the Bana Pele Engagement Platform to get connected
+2. Complete free basic training modules (low-data, phone-friendly)
+3. Identify a safe space and apply for ECCE Livelihoods Fund start-up capital
+4. Register for Bronze tier through eCares (the digital registration system)
+5. Progress to Silver (unlocks the ECD Subsidy) once basic standards are met
+6. Continue improving toward Gold over time, with coaching support
+
+This is general national policy guidance, not a personalised checklist -- exact
+requirements can vary by province/municipality, so always suggest confirming
+specifics with the local Provincial Education Department or municipality.`;
+
+// Used right after a learner picks option 3 and replies with free text.
+// Distinguishes "please explain something to me" from "please connect me
+// with a real person" -- only the second case should create a
+// centre-request and notify the admin.
+const CENTRE_HELP_SYSTEM_PROMPT = `You are a helpful assistant for Bana Pele, South Africa's national early learning initiative, helping people who want to set up or improve an early learning centre.
+
+You are given ONE message from a learner. Decide:
+- If it is a QUESTION seeking information or advice (e.g. "what type of centre should I set up", "how do I get funding", "what are the requirements"), answer it directly and helpfully in 2-4 short sentences, using the reference knowledge below plus your own general knowledge. Keep it warm, plain-language and practical for a first-time practitioner in South Africa. Do not use markdown formatting -- this reply goes straight into a WhatsApp text message.
+- If it is NOT a question but instead a description of what kind of help they personally need (e.g. "I need help finding a location and funding", "I want to open a centre in my village but don't know where to start"), reply with EXACTLY the single word: ESCALATE
+- If genuinely ambiguous, prefer answering as a question rather than escalating.
+
+Reference knowledge:
+${BANA_PELE_KNOWLEDGE}`;
+
+// Used as a last resort, when a message doesn't match ANY known command
+// (menu numbers, "status", "complete N", etc). Tries to actually help
+// with a real answer instead of just showing the menu again.
+const GENERAL_SYSTEM_PROMPT = `You are a helpful WhatsApp assistant for Bana Pele, South Africa's national early learning initiative. You help early learning practitioners and parents with plain-language questions about early childhood development, setting up learning centres, funding, and related topics. Answer in 2-4 short sentences, warm and practical, no markdown formatting (this reply goes straight into a WhatsApp text message). If the message is totally unrelated to early learning/ECD, say briefly that you can't help with that specific thing, and remind them they can type "menu" to see what you can do.
+
+Reference knowledge:
+${BANA_PELE_KNOWLEDGE}`;
 
 // ---- talking to demo-bap-server.js (the same 5 endpoints the Flutter
 // app uses -- see beckn_bap_api.dart and auth_api.dart) ----
@@ -309,6 +400,25 @@ async function handleIncomingMessage(from, text) {
   // since the description itself might just be a number or short word.
   if (session.awaitingCentreDescription) {
     session.awaitingCentreDescription = false;
+
+    if (ANTHROPIC_API_KEY) {
+      try {
+        const reply = await callClaude(CENTRE_HELP_SYSTEM_PROMPT, trimmed);
+        if (reply !== 'ESCALATE') {
+          return sendWhatsAppMessage(
+            from,
+            `${reply}\n\nIf you'd also like hands-on help from a real person on our team, just type 3 again and describe what you personally need.`
+          );
+        }
+        // else: Claude decided this is a genuine help request, not a
+        // question -- fall through to the existing escalation logic below.
+      } catch (err) {
+        console.error('[wa-bot] Claude call failed, falling back to escalation:', err.message);
+        // fall through to escalation so a failed API call doesn't leave
+        // the learner stuck with no response at all
+      }
+    }
+
     const reqId = nextCentreRequestId();
     centreRequests.push({
       id: reqId,
@@ -401,6 +511,18 @@ async function handleIncomingMessage(from, text) {
     session.awaitingCourseSelection = false;
     session.awaitingCentreDescription = false;
     return sendWhatsAppMessage(from, MENU_TEXT);
+  }
+
+  if (ANTHROPIC_API_KEY) {
+    try {
+      const reply = await callClaude(GENERAL_SYSTEM_PROMPT, trimmed);
+      session.awaitingCourseSelection = false;
+      session.awaitingCentreDescription = false;
+      return sendWhatsAppMessage(from, reply);
+    } catch (err) {
+      console.error('[wa-bot] Claude fallback failed, using generic message:', err.message);
+      // fall through to the generic message below
+    }
   }
 
   session.awaitingCourseSelection = false;
