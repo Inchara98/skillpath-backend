@@ -41,10 +41,10 @@ const DEMO_OTP = '123456'; // matches demo-bap-server.js's fixed demo code
 
 // ---- per-phone-number session state (in memory, same "prototype,
 // wiped on restart" tradeoff as the rest of the backend right now) ----
-const sessions = new Map(); // phone -> { token, name, lastCourses: [{id,name}] }
+const sessions = new Map(); // phone -> { token, name, lastCourses: [{id,name}], awaitingCourseSelection }
 
 function getSession(phone) {
-  if (!sessions.has(phone)) sessions.set(phone, { token: null, name: null, lastCourses: [] });
+  if (!sessions.has(phone)) sessions.set(phone, { token: null, name: null, lastCourses: [], awaitingCourseSelection: false });
   return sessions.get(phone);
 }
 
@@ -150,6 +150,7 @@ async function handleIncomingMessage(from, text) {
   // "complete 2" -> mark the 2nd listed course as complete
   const completeMatch = lower.match(/^complete\s+(\d+)$/);
   if (completeMatch) {
+    session.awaitingCourseSelection = false;
     const idx = parseInt(completeMatch[1], 10) - 1;
     const course = session.lastCourses[idx];
     if (!course) return sendWhatsAppMessage(from, "I don't recognize that number. Type 2 to see your current courses first.");
@@ -157,10 +158,16 @@ async function handleIncomingMessage(from, text) {
     return sendWhatsAppMessage(from, `Marked "${course.name}" as complete ✅ — sent to the training authority for approval.`);
   }
 
-  // A bare number reply -> enroll in that course from the last list shown
-  if (/^\d+$/.test(trimmed) && session.lastCourses.length > 0 && !['1', '2'].includes(trimmed)) {
+  // A bare number reply, right after a course list was shown -> enroll in
+  // that course. This takes priority over the "1"/"2" menu shortcuts below,
+  // since the same digit means something different depending on whether
+  // a course list is currently on screen. Cleared once acted on (or once
+  // the user goes and does something else), so "1"/"2" go back to being
+  // the main-menu shortcuts afterwards.
+  if (session.awaitingCourseSelection && /^\d+$/.test(trimmed)) {
     const idx = parseInt(trimmed, 10) - 1;
     const course = session.lastCourses[idx];
+    session.awaitingCourseSelection = false;
     if (!course) return sendWhatsAppMessage(from, "I don't recognize that number. Type 1 to see the course list again.");
     await enrollInCourse(session.token, course.id);
     return sendWhatsAppMessage(
@@ -172,12 +179,17 @@ async function handleIncomingMessage(from, text) {
   if (trimmed === '1') {
     const courses = await discoverCourses(session.token);
     session.lastCourses = courses.map((c) => ({ id: c.id, name: c.name }));
-    if (courses.length === 0) return sendWhatsAppMessage(from, 'No training programs are available right now.');
+    if (courses.length === 0) {
+      session.awaitingCourseSelection = false;
+      return sendWhatsAppMessage(from, 'No training programs are available right now.');
+    }
+    session.awaitingCourseSelection = true;
     const lines = courses.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
     return sendWhatsAppMessage(from, `Available training programs:\n\n${lines}\n\nReply with a number to enroll.`);
   }
 
   if (trimmed === '2' || lower === 'status') {
+    session.awaitingCourseSelection = false;
     const state = await fetchState(session.token);
     const entries = Object.entries(state.courseProgress || {});
     if (entries.length === 0) return sendWhatsAppMessage(from, "You haven't enrolled in anything yet. Type 1 to see available programs.");
@@ -189,9 +201,11 @@ async function handleIncomingMessage(from, text) {
   }
 
   if (['hi', 'hello', 'menu', 'hey', 'start'].includes(lower)) {
+    session.awaitingCourseSelection = false;
     return sendWhatsAppMessage(from, MENU_TEXT);
   }
 
+  session.awaitingCourseSelection = false;
   return sendWhatsAppMessage(from, `Sorry, I didn't understand that.\n\n${MENU_TEXT}`);
 }
 
