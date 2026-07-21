@@ -108,19 +108,27 @@ function meetsPrerequisite(targetCourse, currentTier) {
 // or auto-rejected responses.
 function sendCallback(callback) {
   logPayload('SENDING BACK', callback);
-  const bppCallerUrl = `http://onix-bpp:8082/bpp/caller/${callback.context.action}`;
+  // 'onix-bpp' is a Docker container name -- only resolvable on the
+  // same Docker network. Once deployed elsewhere, set ONIX_BPP_CALLER
+  // to wherever onix-bpp is actually reachable (e.g. an ngrok tunnel).
+  const onixBppBase = process.env.ONIX_BPP_CALLER || 'http://onix-bpp:8082/bpp/caller';
+  const bppCallerUrl = `${onixBppBase}/${callback.context.action}`;
+  console.log(`[course-bpp] attempting hand-off to: ${bppCallerUrl}`);
   fetch(bppCallerUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(callback),
   })
-    .then(() => {
+    .then((res) => {
       console.log(
-        `[course-bpp] handed off ${callback.context.action} to onix-bpp caller -- OK`
+        `[course-bpp] handed off ${callback.context.action} to onix-bpp caller -- status ${res.status}`
       );
     })
     .catch((err) => {
-      console.error('[course-bpp] failed to hand off callback:', err.message);
+      // err.message alone is often just "fetch failed" -- the real
+      // reason (DNS failure, connection refused, timeout, etc.) is
+      // usually in err.cause, which we weren't logging before.
+      console.error('[course-bpp] failed to hand off callback:', err.message, '| cause:', err.cause);
     });
 }
 
