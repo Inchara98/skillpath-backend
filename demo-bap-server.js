@@ -30,6 +30,52 @@
 const http = require('http');
 const crypto = require('crypto');
 
+// ---- Database (Supabase Postgres, via REST -- no npm packages needed) ----
+// Optional: if these aren't set, everything below falls back to the
+// original in-memory-only behaviour (data still works, just doesn't
+// survive a restart).
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+
+function supabaseHeaders(extra = {}) {
+  return {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+}
+
+async function dbSelect(table, query = '') {
+  if (!SUPABASE_URL) return [];
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, { headers: supabaseHeaders() });
+    if (!resp.ok) {
+      console.error(`[demo-bap] failed to load ${table}:`, resp.status, await resp.text());
+      return [];
+    }
+    return resp.json();
+  } catch (err) {
+    console.error(`[demo-bap] failed to load ${table}:`, err.message);
+    return [];
+  }
+}
+
+// Fire-and-forget by design -- persistence failures get logged but
+// never block or break the actual request being served.
+function dbUpsert(table, row, conflictColumn) {
+  if (!SUPABASE_URL) return;
+  fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumn}`, {
+    method: 'POST',
+    headers: supabaseHeaders({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(row),
+  })
+    .then((resp) => {
+      if (!resp.ok) resp.text().then((t) => console.error(`[demo-bap] failed to save to ${table}:`, resp.status, t));
+    })
+    .catch((err) => console.error(`[demo-bap] failed to save to ${table}:`, err.message));
+}
+
 // Where onix-bap lives -- 'onix-bap' is a Docker container name, only
 // resolvable when this server runs on the same Docker network (e.g.
 // your laptop). Once deployed elsewhere (Render, etc.), this MUST be
@@ -98,7 +144,25 @@ function createLearner(phone, name) {
   learners.set(id, learner);
   transactionToLearner.set(learner.transactionId, learner.id);
   if (phone) learnerIdByPhone.set(phone, id);
+  persistLearner(learner);
   return learner;
+}
+
+function persistLearner(learner) {
+  dbUpsert(
+    'learners',
+    {
+      id: learner.id,
+      phone: learner.phone,
+      name: learner.name,
+      transaction_id: learner.transactionId,
+      catalog: learner.catalog,
+      course_progress: learner.courseProgress,
+      tier: learner.tier,
+      log: learner.log,
+    },
+    'id'
+  );
 }
 
 // The demo page's own JS (unchanged) never sends a token -- everything
@@ -264,6 +328,7 @@ async function triggerAction(learner, action, extra = {}) {
 
   const payload = { context, message };
   addLog(learner, 'sent', action, payload);
+  persistLearner(learner);
 
   const url = `${ONIX_BAP_CALLER}/${action}`;
   await fetch(url, {
@@ -343,6 +408,8 @@ function handleCallback(action, incoming) {
       }
     }
   }
+
+  persistLearner(learner);
 }
 
 // Looks up which tier a just-completed course actually certifies to,
@@ -356,6 +423,7 @@ async function updateTierForCompletedCourse(learner, courseId) {
     const course = providerState.catalog.find((c) => c.id === courseId);
     if (course && course.unlocksTier) {
       learner.tier = course.unlocksTier;
+      persistLearner(learner);
     }
   } catch (err) {
     console.error('[demo-bap] failed to determine unlocked tier:', err.message);
@@ -1096,10 +1164,44 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
+// ---- Load everything from the database at startup ----
+async function loadStateFromDb() {
+  if (!SUPABASE_URL) {
+    console.log('[demo-bap] SUPABASE_URL not set -- running in-memory only, data will not persist across restarts');
+    return;
+  }
+
+  const dbLearners = await dbSelect('learners');
+  dbLearners.forEach((row) => {
+    const learner = {
+      id: row.id,
+      phone: row.phone,
+      name: row.name,
+      transactionId: row.transaction_id,
+      catalog: row.catalog,
+      courseProgress: row.course_progress || {},
+      tier: row.tier || 'Bronze',
+      log: row.log || [],
+    };
+    learners.set(learner.id, learner);
+    if (learner.transactionId) transactionToLearner.set(learner.transactionId, learner.id);
+    if (learner.phone) learnerIdByPhone.set(learner.phone, learner.id);
+  });
+
+  // Make sure the fixed demo-guest record is captured in the database
+  // going forward, whether this is the very first run or not (harmless
+  // no-op upsert if it was already loaded above with the same data).
+  persistLearner(learners.get(DEMO_GUEST_ID));
+
+  console.log(`[demo-bap] loaded from database: ${learners.size} learner(s)`);
+}
+
 // Render (and most cloud hosts) assign their own port and expect the app
 // to listen on it via the PORT env var -- 3001 is only used as a fallback
 // for running this locally on your own machine.
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`demo-bap server running on port ${PORT}`);
+loadStateFromDb().then(() => {
+  server.listen(PORT, () => {
+    console.log(`demo-bap server running on port ${PORT}`);
+  });
 });
