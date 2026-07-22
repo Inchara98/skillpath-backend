@@ -24,6 +24,65 @@
 const http = require('http');
 const crypto = require('crypto');
 
+// ---- Database (Supabase Postgres, via REST -- no npm packages needed) ----
+// Optional: if these aren't set, everything below falls back to the
+// original in-memory-only behaviour (data still works, just doesn't
+// survive a restart).
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
+
+function supabaseHeaders(extra = {}) {
+  return {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+}
+
+async function dbSelect(table, query = '') {
+  if (!SUPABASE_URL) return [];
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, { headers: supabaseHeaders() });
+    if (!resp.ok) {
+      console.error(`[course-bpp] failed to load ${table}:`, resp.status, await resp.text());
+      return [];
+    }
+    return resp.json();
+  } catch (err) {
+    console.error(`[course-bpp] failed to load ${table}:`, err.message);
+    return [];
+  }
+}
+
+// Insert-or-update a single row. Fire-and-forget by design (callers
+// don't await this) -- persistence failures get logged but never block
+// or break the actual request being served.
+function dbUpsert(table, row, conflictColumn) {
+  if (!SUPABASE_URL) return;
+  fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumn}`, {
+    method: 'POST',
+    headers: supabaseHeaders({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(row),
+  })
+    .then((resp) => {
+      if (!resp.ok) resp.text().then((t) => console.error(`[course-bpp] failed to save to ${table}:`, resp.status, t));
+    })
+    .catch((err) => console.error(`[course-bpp] failed to save to ${table}:`, err.message));
+}
+
+function dbDelete(table, idColumn, idValue) {
+  if (!SUPABASE_URL) return;
+  fetch(`${SUPABASE_URL}/rest/v1/${table}?${idColumn}=eq.${encodeURIComponent(idValue)}`, {
+    method: 'DELETE',
+    headers: supabaseHeaders({ Prefer: 'return=minimal' }),
+  })
+    .then((resp) => {
+      if (!resp.ok) resp.text().then((t) => console.error(`[course-bpp] failed to delete from ${table}:`, resp.status, t));
+    })
+    .catch((err) => console.error(`[course-bpp] failed to delete from ${table}:`, err.message));
+}
+
 // ---- Our simple demo "database" (just variables in memory) ----
 
 // The catalog of courses this BPP offers -- shared by every learner,
@@ -67,10 +126,18 @@ function getPractitioner(id, name) {
       currentTier: 'Bronze',
       courseStatus: 'not_started', // not_started -> enrolled -> completed
     });
+    persistPractitioner(practitioners.get(id));
   }
   const p = practitioners.get(id);
-  if (name && p.name !== name) p.name = name; // keep the name fresh if it changes
+  if (name && p.name !== name) {
+    p.name = name; // keep the name fresh if it changes
+    persistPractitioner(p);
+  }
   return p;
+}
+
+function persistPractitioner(p) {
+  dbUpsert('practitioners', { id: p.id, name: p.name, current_tier: p.currentTier, course_status: p.courseStatus }, 'id');
 }
 
 // Pulls { id, name } out of the incoming Contract's first participant
@@ -263,6 +330,7 @@ function buildResponse(action, incomingContext, incomingMessage) {
     const courseId = extractCourseId(incomingMessage);
     const p = getPractitioner(participant.id, participant.name);
     p.courseStatus = 'enrolled';
+    persistPractitioner(p);
     return { context, message: { contract: buildContract('ACTIVE', courseId, participant.id, participant.name) } };
   }
 
@@ -274,6 +342,7 @@ function buildResponse(action, incomingContext, incomingMessage) {
     const p = getPractitioner(participant.id, participant.name);
     p.courseStatus = 'completed';
     p.currentTier = targetCourse.unlocksTier;
+    persistPractitioner(p);
 
     // NOTE: the real Beckn OnConfirmAction schema only allows a
     // "contract" property in the message (additionalProperties:
@@ -367,6 +436,7 @@ const server = http.createServer((req, res) => {
 
     const pending = pendingRequests[pendingIndex];
     pendingRequests.splice(pendingIndex, 1);
+    dbDelete('pending_requests', 'id', pendingId);
 
     // buildResponse re-derives the participant from pending.message
     // itself, so the right practitioner's tier/status gets updated
@@ -400,6 +470,7 @@ const server = http.createServer((req, res) => {
 
     const pending = pendingRequests[pendingIndex];
     pendingRequests.splice(pendingIndex, 1);
+    dbDelete('pending_requests', 'id', pendingId);
 
     const participant = extractParticipant(pending.message);
     const courseId = extractCourseId(pending.message);
@@ -451,6 +522,7 @@ const server = http.createServer((req, res) => {
         duration: parsed.duration || '1 week',
       };
       catalog.push(newCourse);
+      dbUpsert('courses', { id: newCourse.id, name: newCourse.name, unlocks_tier: newCourse.unlocksTier, duration: newCourse.duration }, 'id');
       console.log(`[course-bpp] provider added new course: ${newCourse.name} (${newCourse.id})`);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -535,7 +607,7 @@ const server = http.createServer((req, res) => {
       const courseId = extractCourseId(incoming.message);
       const targetCourse = catalog.find((c) => c.id === courseId) || course;
       const participant = extractParticipant(incoming.message);
-      pendingRequests.push({
+      const pendingRow = {
         id: crypto.randomUUID(),
         action,
         context: incoming.context,
@@ -544,7 +616,22 @@ const server = http.createServer((req, res) => {
         courseName: targetCourse.name,
         learnerId: participant.id,
         learnerName: participant.name,
-      });
+      };
+      pendingRequests.push(pendingRow);
+      dbUpsert(
+        'pending_requests',
+        {
+          id: pendingRow.id,
+          action: pendingRow.action,
+          context: pendingRow.context,
+          message: pendingRow.message,
+          course_id: pendingRow.courseId,
+          course_name: pendingRow.courseName,
+          learner_id: pendingRow.learnerId,
+          learner_name: pendingRow.learnerName,
+        },
+        'id'
+      );
       console.log(
         `[course-bpp] ${action} for "${targetCourse.name}" (learner: ${participant.name}) is now PENDING PROVIDER APPROVAL`
       );
@@ -560,7 +647,53 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// ---- Load everything from the database at startup ----
+// If SUPABASE_URL isn't set, this just logs a warning and the server
+// runs exactly as it always did -- in-memory only, wiped on restart.
+async function loadStateFromDb() {
+  if (!SUPABASE_URL) {
+    console.log('[course-bpp] SUPABASE_URL not set -- running in-memory only, data will not persist across restarts');
+    return;
+  }
+
+  const dbCourses = await dbSelect('courses');
+  if (dbCourses.length > 0) {
+    catalog.length = 0; // clear the 3 hardcoded seed courses, DB is the source of truth now
+    dbCourses.forEach((c) => catalog.push({ id: c.id, name: c.name, unlocksTier: c.unlocks_tier, duration: c.duration }));
+  } else {
+    // First run ever -- seed the database with the original 3 demo courses.
+    for (const c of catalog) {
+      dbUpsert('courses', { id: c.id, name: c.name, unlocks_tier: c.unlocksTier, duration: c.duration }, 'id');
+    }
+  }
+
+  const dbPractitioners = await dbSelect('practitioners');
+  dbPractitioners.forEach((p) => {
+    practitioners.set(p.id, { id: p.id, name: p.name, currentTier: p.current_tier, courseStatus: p.course_status });
+  });
+
+  const dbPending = await dbSelect('pending_requests');
+  dbPending.forEach((p) => {
+    pendingRequests.push({
+      id: p.id,
+      action: p.action,
+      context: p.context,
+      message: p.message,
+      courseId: p.course_id,
+      courseName: p.course_name,
+      learnerId: p.learner_id,
+      learnerName: p.learner_name,
+    });
+  });
+
+  console.log(
+    `[course-bpp] loaded from database: ${catalog.length} courses, ${practitioners.size} practitioners, ${pendingRequests.length} pending requests`
+  );
+}
+
 const PORT = process.env.PORT || 3002;
-server.listen(PORT, () => {
-  console.log(`course-bpp demo server running on port ${PORT}`);
+loadStateFromDb().then(() => {
+  server.listen(PORT, () => {
+    console.log(`course-bpp demo server running on port ${PORT}`);
+  });
 });
