@@ -49,6 +49,13 @@
 //                           set up") instead of always escalating to a
 //                           human. Optional -- bot still works without it,
 //                           just falls back to escalating everything.
+//   SUPABASE_URL           - your Supabase project's API URL, e.g.
+//                           https://xxxxx.supabase.co -- enables logging
+//                           every real Q&A answer to the qa_logs table
+//   SUPABASE_SERVICE_KEY   - Supabase's secret/service_role key (NOT the
+//                           anon/publishable one) -- needed alongside
+//                           SUPABASE_URL for Q&A logging. Both optional --
+//                           bot works fine without them, just doesn't log.
 //   PORT                  - Render sets this automatically
 
 const http = require('http');
@@ -59,6 +66,8 @@ const WA_VERIFY_TOKEN = process.env.WA_VERIFY_TOKEN || 'bana-enroll-verify-2026'
 const BAP_BASE_URL = process.env.BAP_BASE_URL || 'http://localhost:3001';
 const ADMIN_PHONE = process.env.ADMIN_PHONE || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || '';
 const PORT = process.env.PORT || 4000;
 const GRAPH_VERSION = 'v20.0';
 const DEMO_OTP = '123456'; // matches demo-bap-server.js's fixed demo code
@@ -102,6 +111,35 @@ function displayName(phone) {
 
 function isAdmin(phone) {
   return !!ADMIN_PHONE && phone === ADMIN_PHONE;
+}
+
+// ---- Q&A logging, using Supabase (optional) ----
+// Saves every real question+answer pair from the natural-language layer
+// (not escalations) so someone can review what people are asking. If
+// SUPABASE_URL/SUPABASE_SERVICE_KEY aren't set, or the request fails for
+// any reason, this fails silently -- logging should never break the
+// actual reply the learner receives.
+
+async function logQA(phone, question, answer) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return;
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/qa_logs`, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=minimal',
+      },
+      body: JSON.stringify({ phone, question, answer }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      console.error('[wa-bot] failed to log Q&A:', resp.status, text);
+    }
+  } catch (err) {
+    console.error('[wa-bot] failed to log Q&A:', err.message);
+  }
 }
 
 // ---- Natural-language answers, using Claude ----
@@ -428,6 +466,7 @@ async function handleIncomingMessage(from, text) {
       try {
         const reply = await callClaude(CENTRE_HELP_SYSTEM_PROMPT, trimmed, { useWebSearch: true });
         if (reply !== 'ESCALATE') {
+          logQA(from, trimmed, reply); // fire-and-forget, never blocks the reply
           return sendWhatsAppMessage(
             from,
             `${reply}\n\nIf you'd also like hands-on help from a real person on our team, just type 3 again and describe what you personally need.`
@@ -539,6 +578,7 @@ async function handleIncomingMessage(from, text) {
   if (ANTHROPIC_API_KEY) {
     try {
       const reply = await callClaude(GENERAL_SYSTEM_PROMPT, trimmed, { useWebSearch: true });
+      logQA(from, trimmed, reply); // fire-and-forget, never blocks the reply
       session.awaitingCourseSelection = false;
       session.awaitingCentreDescription = false;
       return sendWhatsAppMessage(from, reply);
