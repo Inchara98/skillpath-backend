@@ -72,6 +72,45 @@ const PORT = process.env.PORT || 4000;
 const GRAPH_VERSION = 'v20.0';
 const DEMO_OTP = '123456'; // matches demo-bap-server.js's fixed demo code
 
+function supabaseHeaders(extra = {}) {
+  return {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+    ...extra,
+  };
+}
+
+async function dbSelect(table, query = '') {
+  if (!SUPABASE_URL) return [];
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, { headers: supabaseHeaders() });
+    if (!resp.ok) {
+      console.error(`[wa-bot] failed to load ${table}:`, resp.status, await resp.text());
+      return [];
+    }
+    return resp.json();
+  } catch (err) {
+    console.error(`[wa-bot] failed to load ${table}:`, err.message);
+    return [];
+  }
+}
+
+// Fire-and-forget by design -- persistence failures get logged but
+// never block or break the actual WhatsApp reply being sent.
+function dbUpsert(table, row, conflictColumn) {
+  if (!SUPABASE_URL) return;
+  fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictColumn}`, {
+    method: 'POST',
+    headers: supabaseHeaders({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+    body: JSON.stringify(row),
+  })
+    .then((resp) => {
+      if (!resp.ok) resp.text().then((t) => console.error(`[wa-bot] failed to save to ${table}:`, resp.status, t));
+    })
+    .catch((err) => console.error(`[wa-bot] failed to save to ${table}:`, err.message));
+}
+
 // ---- per-phone-number session state (in memory, same "prototype,
 // wiped on restart" tradeoff as the rest of the backend right now) ----
 const sessions = new Map(); // phone -> { token, name, lastCourses: [{id,name}], awaitingCourseSelection, awaitingCentreDescription }
@@ -103,6 +142,41 @@ let centreRequestCounter = 0;
 function nextCentreRequestId() {
   centreRequestCounter += 1;
   return `CR${centreRequestCounter}`;
+}
+
+function persistSession(phone, session) {
+  dbUpsert(
+    'wa_sessions',
+    {
+      phone,
+      token: session.token,
+      name: session.name,
+      last_courses: session.lastCourses,
+      awaiting_course_selection: session.awaitingCourseSelection,
+      awaiting_centre_description: session.awaitingCentreDescription,
+    },
+    'phone'
+  );
+}
+
+function persistExpert(expert) {
+  dbUpsert('wa_experts', { phone: expert.phone, name: expert.name }, 'phone');
+}
+
+function persistCentreRequest(req) {
+  dbUpsert(
+    'centre_requests',
+    {
+      id: req.id,
+      learner_phone: req.learnerPhone,
+      learner_name: req.learnerName,
+      description: req.description,
+      status: req.status,
+      assigned_phone: req.assignedPhone,
+      assigned_name: req.assignedName,
+    },
+    'id'
+  );
 }
 
 function displayName(phone) {
@@ -351,6 +425,7 @@ async function handleAssign(reqId, assigneePhone, assigneeName) {
   chatPartners.set(req.learnerPhone, assigneePhone);
   chatPartners.set(assigneePhone, req.learnerPhone);
   displayNames.set(assigneePhone, assigneeName);
+  persistCentreRequest(req);
 
   await sendWhatsAppMessage(
     req.learnerPhone,
@@ -391,7 +466,19 @@ const MENU_TEXT =
   '3️⃣ Get help setting up a learning centre\n\n' +
   'Reply with 1, 2, or 3, or type "menu" anytime to see this again.';
 
+// Wraps the real handler so the session gets saved to the database
+// exactly once per incoming message, no matter which branch below
+// actually handled it (there are many early "return"s inside).
 async function handleIncomingMessage(from, text) {
+  try {
+    return await handleIncomingMessageInner(from, text);
+  } finally {
+    const session = sessions.get(from);
+    if (session) persistSession(from, session);
+  }
+}
+
+async function handleIncomingMessageInner(from, text) {
   const trimmed = (text || '').trim();
   const lower = trimmed.toLowerCase();
 
@@ -408,7 +495,10 @@ async function handleIncomingMessage(from, text) {
       const req = centreRequests.find(
         (r) => r.status === 'assigned' && (r.learnerPhone === from || r.assignedPhone === from)
       );
-      if (req) req.status = 'closed';
+      if (req) {
+        req.status = 'closed';
+        persistCentreRequest(req);
+      }
       await sendWhatsAppMessage(from, 'Chat ended. Type "menu" to go back to the main menu.');
       await sendWhatsAppMessage(partner, 'The other person ended the chat. Type "menu" to go back to the main menu.');
       return;
@@ -429,8 +519,10 @@ async function handleIncomingMessage(from, text) {
     const registerMatch = trimmed.match(/^register expert\s+(\d+)\s+(.+)$/i);
     if (registerMatch) {
       const [, expertPhone, expertName] = registerMatch;
-      experts.set(expertPhone, { phone: expertPhone, name: expertName.trim() });
+      const expert = { phone: expertPhone, name: expertName.trim() };
+      experts.set(expertPhone, expert);
       displayNames.set(expertPhone, expertName.trim());
+      persistExpert(expert);
       return sendWhatsAppMessage(from, `Registered expert "${expertName.trim()}" (${expertPhone}). They can now reply "accept <id>" to take a forwarded request.`);
     }
     if (lower === 'list experts') {
@@ -482,7 +574,7 @@ async function handleIncomingMessage(from, text) {
     }
 
     const reqId = nextCentreRequestId();
-    centreRequests.push({
+    const newRequest = {
       id: reqId,
       learnerPhone: from,
       learnerName: session.name || from,
@@ -490,7 +582,9 @@ async function handleIncomingMessage(from, text) {
       status: 'new',
       assignedPhone: null,
       assignedName: null,
-    });
+    };
+    centreRequests.push(newRequest);
+    persistCentreRequest(newRequest);
     if (ADMIN_PHONE) {
       await sendWhatsAppMessage(
         ADMIN_PHONE,
@@ -726,6 +820,61 @@ const server = http.createServer((req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, () => {
-  console.log(`[wa-bot] listening on port ${PORT}, forwarding to ${BAP_BASE_URL}`);
+// ---- Load everything from the database at startup ----
+async function loadStateFromDb() {
+  if (!SUPABASE_URL) {
+    console.log('[wa-bot] SUPABASE_URL not set -- running in-memory only, data will not persist across restarts');
+    return;
+  }
+
+  const dbSessions = await dbSelect('wa_sessions');
+  dbSessions.forEach((row) => {
+    sessions.set(row.phone, {
+      token: row.token,
+      name: row.name,
+      lastCourses: row.last_courses || [],
+      awaitingCourseSelection: row.awaiting_course_selection || false,
+      awaitingCentreDescription: row.awaiting_centre_description || false,
+    });
+  });
+
+  const dbExperts = await dbSelect('wa_experts');
+  dbExperts.forEach((row) => {
+    experts.set(row.phone, { phone: row.phone, name: row.name });
+    displayNames.set(row.phone, row.name);
+  });
+
+  const dbCentreRequests = await dbSelect('centre_requests');
+  dbCentreRequests.forEach((row) => {
+    centreRequests.push({
+      id: row.id,
+      learnerPhone: row.learner_phone,
+      learnerName: row.learner_name,
+      description: row.description,
+      status: row.status,
+      assignedPhone: row.assigned_phone,
+      assignedName: row.assigned_name,
+    });
+    // Rebuild the live chat-relay routing table for any request that
+    // was still actively "assigned" (mid-chat) when the server last
+    // stopped, so an in-progress conversation can pick back up.
+    if (row.status === 'assigned' && row.learner_phone && row.assigned_phone) {
+      chatPartners.set(row.learner_phone, row.assigned_phone);
+      chatPartners.set(row.assigned_phone, row.learner_phone);
+    }
+    // Keep new request IDs (CR1, CR2, ...) counting up from the
+    // highest one already saved, so restarts never reuse an old id.
+    const match = /^CR(\d+)$/.exec(row.id);
+    if (match) centreRequestCounter = Math.max(centreRequestCounter, parseInt(match[1], 10));
+  });
+
+  console.log(
+    `[wa-bot] loaded from database: ${sessions.size} session(s), ${experts.size} expert(s), ${centreRequests.length} centre request(s)`
+  );
+}
+
+loadStateFromDb().then(() => {
+  server.listen(PORT, () => {
+    console.log(`[wa-bot] listening on port ${PORT}, forwarding to ${BAP_BASE_URL}`);
+  });
 });
