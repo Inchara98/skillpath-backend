@@ -556,6 +556,15 @@ async function handleIncomingMessageInner(from, text) {
   if (session.awaitingCentreDescription) {
     session.awaitingCentreDescription = false;
 
+    // If the very next message is clearly someone backing out ("menu",
+    // "hi", "cancel", etc.) rather than actually describing what help
+    // they need, just show the menu instead of treating those words as
+    // their centre-help description.
+    const cancelWords = ['menu', 'hi', 'hello', 'hey', 'start', 'cancel', 'no', 'nevermind', 'never mind'];
+    if (cancelWords.includes(lower)) {
+      return sendWhatsAppMessage(from, MENU_TEXT);
+    }
+
     if (ANTHROPIC_API_KEY) {
       try {
         const reply = await callClaude(CENTRE_HELP_SYSTEM_PROMPT, trimmed, { useWebSearch: true });
