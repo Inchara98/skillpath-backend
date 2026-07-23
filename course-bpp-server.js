@@ -612,12 +612,8 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: 'Invalid JSON' }));
         return;
       }
-      const p = practitioners.get(practitionerId);
-      if (!p) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `No practitioner found with id ${practitionerId}` }));
-        return;
-      }
+      const p = practitioners.get(practitionerId) || getPractitioner(practitionerId, parsed.name || practitionerId);
+      if (parsed.tier) p.currentTier = parsed.tier;
       p.area = parsed.area || null;
       p.yearsExperience = parsed.yearsExperience != null ? Number(parsed.yearsExperience) : null;
       p.elpType = parsed.elpType || null;
