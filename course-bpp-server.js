@@ -305,7 +305,7 @@ function buildResponse(action, incomingContext, incomingMessage) {
     // without needing a whole separate protocol action for it.
     if (intent.category === 'peers') {
       const peers = Array.from(practitioners.values()).filter(
-        (p) => p.currentTier !== 'Bronze' && p.area // only show practitioners the provider has actually set a peer profile for
+        (p) => p.area // show any practitioner the provider has actually set a peer profile for, regardless of tier
       );
       return {
         context,
