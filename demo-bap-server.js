@@ -157,6 +157,7 @@ function persistLearner(learner) {
       name: learner.name,
       transaction_id: learner.transactionId,
       catalog: learner.catalog,
+      peer_catalog: learner.peerCatalog,
       course_progress: learner.courseProgress,
       tier: learner.tier,
       log: learner.log,
@@ -286,8 +287,13 @@ async function triggerAction(learner, action, extra = {}) {
   if (action === 'discover') {
     learner.transactionId = crypto.randomUUID();
     // Clear old results while the new search is in flight, so the UI
-    // can show a "searching..." state instead of stale results.
-    learner.catalog = null;
+    // can show a "searching..." state instead of stale results. Only
+    // clear whichever one is actually being searched for.
+    if (extra.category === 'peers') {
+      learner.peerCatalog = null;
+    } else {
+      learner.catalog = null;
+    }
   }
   // Every transaction this learner starts needs to be routable back to
   // them when the async on_* callback arrives later.
@@ -304,13 +310,14 @@ async function triggerAction(learner, action, extra = {}) {
   const context = buildContext(learner, action);
   let message = {};
   if (action === 'discover') {
-    // The real Beckn schema requires message.intent to be present
-    // (even empty) for a discover request. A search term goes in
-    // intent.textSearch (a plain string) -- NOT intent.descriptor,
-    // which isn't a supported field on the real Intent schema.
-    message = extra.query
-      ? { intent: { textSearch: extra.query } }
-      : { intent: {} };
+    // Real Beckn schema requires message.intent to be present (even
+    // empty). A search term goes in intent.textSearch. We also use
+    // intent.category as a simple way to ask for something other than
+    // courses -- e.g. category: "peers" asks course-bpp for its peer
+    // directory instead of the training catalog.
+    message = { intent: {} };
+    if (extra.query) message.intent.textSearch = extra.query;
+    if (extra.category) message.intent.category = extra.category;
   } else if (action === 'select') {
     // A fresh enroll attempt on this specific course -- clear any old
     // rejection message for it so it doesn't linger on a retry.
@@ -354,13 +361,32 @@ function handleCallback(action, incoming) {
   const message = incoming.message || {};
 
   if (action === 'on_discover' && message.catalogs) {
-    // Flatten every provider's resources into a simple list of courses
-    // for our simple single-provider demo.
-    const resources = message.catalogs.flatMap((cat) => cat.resources || []);
-    learner.catalog = resources.map((r) => ({
-      id: r.id,
-      name: r.descriptor && r.descriptor.name,
-    }));
+    const firstCatalog = message.catalogs[0];
+    if (firstCatalog && firstCatalog.id === 'catalog-peer-provider-001') {
+      // This is a peer-directory response, not a course catalog.
+      // course-bpp deliberately doesn't know phone numbers (it only
+      // knows the learner id Beckn carries) -- we look each one up in
+      // OUR OWN learners table to attach the phone number the WhatsApp
+      // bot actually needs to message that peer.
+      const resources = firstCatalog.resources || [];
+      learner.peerCatalog = resources.map((r) => {
+        const peerLearner = learners.get(r.id);
+        return {
+          id: r.id,
+          name: (r.descriptor && r.descriptor.name) || r.id,
+          phone: peerLearner ? peerLearner.phone : null,
+          ...(r.peerProfile || {}),
+        };
+      });
+    } else {
+      // Flatten every provider's resources into a simple list of courses
+      // for our simple single-provider demo.
+      const resources = message.catalogs.flatMap((cat) => cat.resources || []);
+      learner.catalog = resources.map((r) => ({
+        id: r.id,
+        name: r.descriptor && r.descriptor.name,
+      }));
+    }
   }
 
   if (action === 'on_init') {
@@ -1099,6 +1125,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       transactionId: learner.transactionId,
       catalog: learner.catalog,
+      peerCatalog: learner.peerCatalog,
       courseProgress: learner.courseProgress,
       tier: learner.tier,
       log: learner.log,
@@ -1179,6 +1206,7 @@ async function loadStateFromDb() {
       name: row.name,
       transactionId: row.transaction_id,
       catalog: row.catalog,
+      peerCatalog: row.peer_catalog,
       courseProgress: row.course_progress || {},
       tier: row.tier || 'Bronze',
       log: row.log || [],
