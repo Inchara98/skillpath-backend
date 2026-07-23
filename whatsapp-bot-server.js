@@ -33,6 +33,15 @@
 //        "assign me <id>", "forward <id>", "register expert <phone> <name>",
 //        "list experts", "list requests"
 //      Expert-only command: "accept <id>" (first to accept gets it)
+//   8. "4" -> browse peers for peer support. Peer PROFILES are NOT
+//      managed here at all -- they live on the provider side
+//      (course-bpp's practitioners, set via a provider-only endpoint)
+//      and are fetched fresh every time via the REAL Beckn discover
+//      action (category: "peers"), the exact same mechanism as courses.
+//      Flow: list -> pick a number -> see full profile -> reply
+//      "connect" (or 0 to go back). The chosen peer gets notified and
+//      can "accept <id>"/"decline <id>"; only on accept does the live
+//      chat relay start (same relay mechanism as centre-setup).
 //
 // Env vars required (set these in Render, never hardcode them):
 //   WA_TOKEN              - Meta temporary/permanent access token
@@ -123,6 +132,14 @@ function getSession(phone) {
       lastCourses: [],
       awaitingCourseSelection: false,
       awaitingCentreDescription: false,
+      // Peer-connect browsing state -- in-memory only, same reasoning
+      // as the two flags above (single-message follow-up state, not
+      // durable). lastPeerList holds the actual peer objects fetched
+      // live from Beckn discover, not just phone numbers, since this
+      // bot doesn't store peer data of its own to look them back up in.
+      awaitingPeerSelection: false,
+      viewingPeer: null,
+      lastPeerList: [],
     });
   }
   return sessions.get(phone);
@@ -185,6 +202,109 @@ function displayName(phone) {
 
 function isAdmin(phone) {
   return !!ADMIN_PHONE && phone === ADMIN_PHONE;
+}
+
+// ---- "connect with a peer for support" system ----
+// Peer PROFILES live entirely on the provider side (course-bpp), fetched
+// fresh via the real Beckn discover action every time a learner types
+// "4" -- this bot never stores or edits peer info itself. What DOES
+// live here, bot-side, is the lightweight "please connect me with THIS
+// specific peer" handshake (request -> accept/decline -> chat), since
+// that's inherently a WhatsApp-side interaction, not a Beckn transaction.
+const peerConnectRequests = []; // { id, learnerPhone, learnerName, peerPhone, peerName, status: 'pending'|'accepted'|'declined'|'closed' }
+let peerConnectCounter = 0;
+
+function nextPeerConnectId() {
+  peerConnectCounter += 1;
+  return `PC${peerConnectCounter}`;
+}
+
+function persistPeerConnectRequest(req) {
+  dbUpsert(
+    'peer_connect_requests',
+    {
+      id: req.id,
+      learner_phone: req.learnerPhone,
+      learner_name: req.learnerName,
+      peer_phone: req.peerPhone,
+      peer_name: req.peerName,
+      status: req.status,
+    },
+    'id'
+  );
+}
+
+function formatPeerListLine(index, peer) {
+  const tier = peer.tier ? `${peer.tier} Tier` : 'Tier not set';
+  const area = peer.area ? ` — ${peer.area}` : '';
+  return `${index + 1}. ${peer.name} — ${tier}${area}`;
+}
+
+function formatPeerProfile(peer) {
+  const lines = [`${peer.name} — ${peer.tier ? peer.tier + ' Tier ' : ''}ELP Practitioner`];
+  if (peer.area) lines.push(`Area: ${peer.area}`);
+  if (peer.yearsExperience != null) lines.push(`Years of Experience: ${peer.yearsExperience} years`);
+  if (peer.elpType) lines.push(`ELP Type: ${peer.elpType}`);
+  if (peer.hubs && peer.hubs.length > 0) lines.push(`Associated Community/Hubs: ${peer.hubs.join(', ')}`);
+  if (peer.certifications && peer.certifications.length > 0) lines.push(`Certifications: ${peer.certifications.join(', ')}`);
+  lines.push('');
+  lines.push('Reply "connect" to request to connect with them, or 0 to go back to the peer list.');
+  return lines.join('\n');
+}
+
+// Learner requested to connect with a specific peer. Notifies the peer
+// with accept/decline instructions -- does NOT start the chat relay yet,
+// that only happens once the peer actually accepts.
+async function requestPeerConnect(learnerPhone, learnerName, peer) {
+  if (!peer.phone) {
+    return sendWhatsAppMessage(learnerPhone, "Sorry, we don't have a way to reach that peer directly yet. Type 4 to see other peers.");
+  }
+  const reqId = nextPeerConnectId();
+  const newRequest = {
+    id: reqId,
+    learnerPhone,
+    learnerName,
+    peerPhone: peer.phone,
+    peerName: peer.name,
+    status: 'pending',
+  };
+  peerConnectRequests.push(newRequest);
+  persistPeerConnectRequest(newRequest);
+  await sendWhatsAppMessage(
+    peer.phone,
+    `👋 ${learnerName} would like to connect with you for peer support.\n\nReply "accept ${reqId}" to connect, or "decline ${reqId}" to pass.`
+  );
+  return sendWhatsAppMessage(learnerPhone, `Request sent to ${peer.name} — we'll let you know as soon as they respond.`);
+}
+
+async function handlePeerAccept(reqId, peerPhone) {
+  const req = peerConnectRequests.find((r) => r.id === reqId);
+  if (!req) return sendWhatsAppMessage(peerPhone, `I don't recognize request ${reqId}.`);
+  if (req.peerPhone !== peerPhone) return sendWhatsAppMessage(peerPhone, `Request ${reqId} isn't addressed to you.`);
+  if (req.status !== 'pending') return sendWhatsAppMessage(peerPhone, `Request ${reqId} has already been ${req.status}.`);
+  req.status = 'accepted';
+  persistPeerConnectRequest(req);
+  chatPartners.set(req.learnerPhone, peerPhone);
+  chatPartners.set(peerPhone, req.learnerPhone);
+  await sendWhatsAppMessage(
+    req.learnerPhone,
+    `Good news — ${req.peerName} accepted your request! You can chat with them right here now. Type "end chat" anytime to stop.`
+  );
+  return sendWhatsAppMessage(
+    peerPhone,
+    `You're now connected with ${req.learnerName}. Anything you type here goes straight to them. Type "end chat" anytime to stop.`
+  );
+}
+
+async function handlePeerDecline(reqId, peerPhone) {
+  const req = peerConnectRequests.find((r) => r.id === reqId);
+  if (!req) return sendWhatsAppMessage(peerPhone, `I don't recognize request ${reqId}.`);
+  if (req.peerPhone !== peerPhone) return sendWhatsAppMessage(peerPhone, `Request ${reqId} isn't addressed to you.`);
+  if (req.status !== 'pending') return sendWhatsAppMessage(peerPhone, `Request ${reqId} has already been ${req.status}.`);
+  req.status = 'declined';
+  persistPeerConnectRequest(req);
+  await sendWhatsAppMessage(req.learnerPhone, `${req.peerName} isn't available to connect right now. Type 4 to see other peers.`);
+  return sendWhatsAppMessage(peerPhone, 'Declined. Thanks for letting us know.');
 }
 
 // ---- Q&A logging, using Supabase (optional) ----
@@ -368,6 +488,17 @@ async function discoverCourses(token) {
   return state.catalog || [];
 }
 
+// Same real Beckn discover action as courses, just asking for a
+// different category. course-bpp responds with a directory of
+// practitioners the PROVIDER has set a peer-support profile for --
+// this bot never stores or manages peer data itself.
+async function discoverPeers(token) {
+  await bapFetch('/api/trigger/discover', { method: 'POST', token, body: { category: 'peers' } });
+  await sleep(900);
+  const state = await bapFetch('/api/state', { token });
+  return state.peerCatalog || [];
+}
+
 async function enrollInCourse(token, courseId) {
   await bapFetch('/api/trigger/select', { method: 'POST', token, body: { courseId } });
   await sleep(600);
@@ -465,8 +596,9 @@ const MENU_TEXT =
   'Welcome to Bana Pele Enrollment 👋\n\n' +
   '1️⃣ See available training programs\n' +
   '2️⃣ Check my enrollment status\n' +
-  '3️⃣ Get help setting up a learning centre\n\n' +
-  'Reply with 1, 2, or 3, or type "menu" anytime to see this again.';
+  '3️⃣ Get help setting up a learning centre\n' +
+  '4️⃣ Connect with a peer for support\n\n' +
+  'Reply with 1, 2, 3, or 4, or type "menu" anytime to see this again.';
 
 // Wraps the real handler so the session gets saved to the database
 // exactly once per incoming message, no matter which branch below
@@ -540,11 +672,25 @@ async function handleIncomingMessageInner(from, text) {
     }
   }
 
-  // ---- Expert command: "accept <id>" -- first registered expert to
-  // accept a forwarded request gets matched with the learner. ----
+  // ---- Peer-connect responses: "accept <id>" / "decline <id>" -- a
+  // peer is just a real practitioner (not necessarily a registered
+  // centre-setup expert), so these are checked independently of the
+  // `experts` list below. ----
   const acceptMatch = trimmed.match(/^accept\s+(\S+)$/i);
-  if (acceptMatch && experts.has(from)) {
-    return handleAssign(acceptMatch[1], from, experts.get(from).name);
+  if (acceptMatch) {
+    const id = acceptMatch[1];
+    if (peerConnectRequests.some((r) => r.id === id && r.peerPhone === from)) {
+      return handlePeerAccept(id, from);
+    }
+    // Fall through to the centre-setup "expert accepts a forwarded
+    // request" meaning, which DOES require being a registered expert.
+    if (experts.has(from)) {
+      return handleAssign(id, from, experts.get(from).name);
+    }
+  }
+  const declineMatch = trimmed.match(/^decline\s+(\S+)$/i);
+  if (declineMatch && peerConnectRequests.some((r) => r.id === declineMatch[1] && r.peerPhone === from)) {
+    return handlePeerDecline(declineMatch[1], from);
   }
 
   const session = await ensureLoggedIn(from);
@@ -562,6 +708,8 @@ async function handleIncomingMessageInner(from, text) {
     // their centre-help description.
     const cancelWords = ['menu', 'hi', 'hello', 'hey', 'start', 'cancel', 'no', 'nevermind', 'never mind'];
     if (cancelWords.includes(lower)) {
+      session.awaitingPeerSelection = false;
+      session.viewingPeer = null;
       return sendWhatsAppMessage(from, MENU_TEXT);
     }
 
@@ -608,11 +756,44 @@ async function handleIncomingMessageInner(from, text) {
     return sendWhatsAppMessage(from, "Thanks! We've noted what you need help with, and someone from our team will reach out here soon.");
   }
 
+  // A learner is currently looking at one specific peer's profile
+  // (just picked a number from a freshly-fetched peer list) -- expects
+  // either "connect" or "0" to go back.
+  if (session.viewingPeer) {
+    const peer = session.viewingPeer;
+    if (lower === 'connect') {
+      session.viewingPeer = null;
+      await requestPeerConnect(from, session.name || from, peer);
+      return;
+    }
+    if (trimmed === '0') {
+      session.viewingPeer = null;
+      session.awaitingPeerSelection = true;
+      const lines = session.lastPeerList.map((p, i) => formatPeerListLine(i, p)).join('\n');
+      return sendWhatsAppMessage(from, `Available peers:\n\n${lines}\n\nReply with a number to see their profile, or 0 to go back to the menu.`);
+    }
+    return sendWhatsAppMessage(from, 'Reply "connect" to request to connect with them, or 0 to go back to the peer list.');
+  }
+
+  // A learner just saw the peer list and is picking a number (or 0 to
+  // cancel back to the main menu).
+  if (session.awaitingPeerSelection && /^\d+$/.test(trimmed)) {
+    session.awaitingPeerSelection = false;
+    if (trimmed === '0') return sendWhatsAppMessage(from, MENU_TEXT);
+    const idx = parseInt(trimmed, 10) - 1;
+    const peer = session.lastPeerList[idx];
+    if (!peer) return sendWhatsAppMessage(from, "I don't recognize that number. Type 4 to see the peer list again.");
+    session.viewingPeer = peer;
+    return sendWhatsAppMessage(from, formatPeerProfile(peer));
+  }
+
   // "complete 2" -> mark the 2nd listed course as complete
   const completeMatch = lower.match(/^complete\s+(\d+)$/);
   if (completeMatch) {
     session.awaitingCourseSelection = false;
     session.awaitingCentreDescription = false;
+    session.awaitingPeerSelection = false;
+    session.viewingPeer = null;
     const idx = parseInt(completeMatch[1], 10) - 1;
     const course = session.lastCourses[idx];
     if (!course) return sendWhatsAppMessage(from, "I don't recognize that number. Type 2 to see your current courses first.");
@@ -643,6 +824,8 @@ async function handleIncomingMessageInner(from, text) {
     const courses = await discoverCourses(session.token);
     session.lastCourses = courses.map((c) => ({ id: c.id, name: c.name }));
     session.awaitingCentreDescription = false;
+    session.awaitingPeerSelection = false;
+    session.viewingPeer = null;
     if (courses.length === 0) {
       session.awaitingCourseSelection = false;
       return sendWhatsAppMessage(from, 'No training programs are available right now.');
@@ -655,6 +838,8 @@ async function handleIncomingMessageInner(from, text) {
   if (trimmed === '2' || lower === 'status') {
     session.awaitingCourseSelection = false;
     session.awaitingCentreDescription = false;
+    session.awaitingPeerSelection = false;
+    session.viewingPeer = null;
     const state = await fetchState(session.token);
     const entries = Object.entries(state.courseProgress || {});
     if (entries.length === 0) return sendWhatsAppMessage(from, "You haven't enrolled in anything yet. Type 1 to see available programs.");
@@ -667,6 +852,8 @@ async function handleIncomingMessageInner(from, text) {
 
   if (trimmed === '3') {
     session.awaitingCourseSelection = false;
+    session.awaitingPeerSelection = false;
+    session.viewingPeer = null;
     session.awaitingCentreDescription = true;
     return sendWhatsAppMessage(
       from,
@@ -674,9 +861,26 @@ async function handleIncomingMessageInner(from, text) {
     );
   }
 
+  if (trimmed === '4') {
+    session.awaitingCourseSelection = false;
+    session.awaitingCentreDescription = false;
+    session.viewingPeer = null;
+    const peers = await discoverPeers(session.token);
+    if (peers.length === 0) {
+      session.awaitingPeerSelection = false;
+      return sendWhatsAppMessage(from, 'No peers are available yet -- check back soon!');
+    }
+    session.lastPeerList = peers;
+    session.awaitingPeerSelection = true;
+    const lines = peers.map((p, i) => formatPeerListLine(i, p)).join('\n');
+    return sendWhatsAppMessage(from, `Available peers:\n\n${lines}\n\nReply with a number to see their profile, or 0 to go back to the menu.`);
+  }
+
   if (['hi', 'hello', 'menu', 'hey', 'start'].includes(lower)) {
     session.awaitingCourseSelection = false;
     session.awaitingCentreDescription = false;
+    session.awaitingPeerSelection = false;
+    session.viewingPeer = null;
     return sendWhatsAppMessage(from, MENU_TEXT);
   }
 
@@ -686,6 +890,8 @@ async function handleIncomingMessageInner(from, text) {
       logQA(from, trimmed, reply); // fire-and-forget, never blocks the reply
       session.awaitingCourseSelection = false;
       session.awaitingCentreDescription = false;
+      session.awaitingPeerSelection = false;
+      session.viewingPeer = null;
       return sendWhatsAppMessage(from, reply);
     } catch (err) {
       console.error('[wa-bot] Claude fallback failed, using generic message:', err.message);
@@ -695,6 +901,8 @@ async function handleIncomingMessageInner(from, text) {
 
   session.awaitingCourseSelection = false;
   session.awaitingCentreDescription = false;
+  session.awaitingPeerSelection = false;
+  session.viewingPeer = null;
   return sendWhatsAppMessage(from, `Sorry, I didn't understand that.\n\n${MENU_TEXT}`);
 }
 
@@ -885,8 +1093,26 @@ async function loadStateFromDb() {
     if (match) centreRequestCounter = Math.max(centreRequestCounter, parseInt(match[1], 10));
   });
 
+  const dbPeerConnectRequests = await dbSelect('peer_connect_requests');
+  dbPeerConnectRequests.forEach((row) => {
+    peerConnectRequests.push({
+      id: row.id,
+      learnerPhone: row.learner_phone,
+      learnerName: row.learner_name,
+      peerPhone: row.peer_phone,
+      peerName: row.peer_name,
+      status: row.status,
+    });
+    if (row.status === 'accepted' && row.learner_phone && row.peer_phone) {
+      chatPartners.set(row.learner_phone, row.peer_phone);
+      chatPartners.set(row.peer_phone, row.learner_phone);
+    }
+    const peerMatch = /^PC(\d+)$/.exec(row.id);
+    if (peerMatch) peerConnectCounter = Math.max(peerConnectCounter, parseInt(peerMatch[1], 10));
+  });
+
   console.log(
-    `[wa-bot] loaded from database: ${sessions.size} session(s), ${experts.size} expert(s), ${centreRequests.length} centre request(s)`
+    `[wa-bot] loaded from database: ${sessions.size} session(s), ${experts.size} expert(s), ${centreRequests.length} centre request(s), ${peerConnectRequests.length} peer-connect request(s)`
   );
 }
 
