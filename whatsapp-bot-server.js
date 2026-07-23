@@ -315,6 +315,8 @@ ${BANA_PELE_KNOWLEDGE}`;
 // with a real answer instead of just showing the menu again.
 const GENERAL_SYSTEM_PROMPT = `You are a helpful WhatsApp assistant for Bana Pele, South Africa's national early learning initiative. You help early learning practitioners and parents with plain-language questions about early childhood development, setting up learning centres, funding, and related topics. Use the reference knowledge below, your own general knowledge, and web search when it would give more current or specific detail. If the message is totally unrelated to early learning/ECD, say briefly that you can't help with that specific thing, and remind them they can type "menu" to see what you can do.
 
+IMPORTANT: You do NOT have access to this specific bot's live, current course catalog or the learner's actual enrollment/status records -- do not invent, guess, or list specific course names or enrollment details. If someone asks what courses/programs are available, or to check their own enrollment/status, tell them to type 1 (to see the real course list) or 2 (to check their real status) instead of answering that part yourself.
+
 FORMATTING (this reply goes straight into a WhatsApp text message, so no markdown):
 - Write in short sentences.
 - If the answer has multiple conditions, steps, requirements or options, list them one per line starting with "- ", instead of packing them into one long sentence.
@@ -833,8 +835,14 @@ async function loadStateFromDb() {
       token: row.token,
       name: row.name,
       lastCourses: row.last_courses || [],
-      awaitingCourseSelection: row.awaiting_course_selection || false,
-      awaitingCentreDescription: row.awaiting_centre_description || false,
+      // Deliberately NOT restored from the database -- these represent
+      // "I just asked a single-message follow-up question" state, not
+      // durable identity/history. Restoring them after a restart caused
+      // a real bug: a stale "waiting for centre description" flag made
+      // an unrelated later message (e.g. "Hi") get misread as the
+      // answer to a question from days earlier.
+      awaitingCourseSelection: false,
+      awaitingCentreDescription: false,
     });
   });
 
