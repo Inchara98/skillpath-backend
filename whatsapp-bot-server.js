@@ -5,6 +5,18 @@
 // "client" of demo-bap-server.js -- exactly like the citizen_app Flutter
 // app is -- except the UI is WhatsApp text messages instead of buttons.
 //
+// ---- CHANGE LOG: AI-first conversation, not menu-first ----
+// Every message now goes through Claude FIRST (handleConversationalFlow)
+// to figure out what the person wants from natural phrasing -- "show me
+// what's available", "connect me with Marizanne", "how's my status" --
+// instead of requiring an exact number or keyword. The underlying work
+// (discoverCourses, enrollInCourse, requestPeerConnect, etc.) is
+// UNCHANGED -- only the "what should I call" decision changed. The old,
+// fully menu-driven flow (handleMenuDrivenFlow) is kept intact as a
+// complete fallback, used automatically if ANTHROPIC_API_KEY isn't set,
+// or if the conversational router itself fails for any reason -- the
+// bot should never go silent just because the AI layer had a problem.
+//
 // Flow per WhatsApp user (keyed by their phone number):
 //   1. First message ever -> auto-login against demo-bap-server.js using
 //      their WhatsApp phone number (no separate OTP typing needed --
@@ -446,6 +458,248 @@ FORMATTING (this reply goes straight into a WhatsApp text message, so no markdow
 Reference knowledge:
 ${BANA_PELE_KNOWLEDGE}`;
 
+// ---- AI-first conversational router ----
+// Every message (once past chat-relay/admin/accept-decline) goes through
+// THIS first, instead of requiring an exact number or keyword. Claude
+// decides what the person wants (and, if relevant, WHICH course/peer
+// they mean) from natural phrasing; the actual work is still done by
+// the exact same functions as the old menu flow (discoverCourses,
+// enrollInCourse, requestPeerConnect, etc.) -- only the "what should I
+// call" decision changed, not the underlying logic.
+
+async function classifyConversation(message, context) {
+  const coursesList = context.courses.length ? context.courses.map((c) => `- ${c.name}`).join('\n') : '(none shown yet)';
+  const peersList = context.peers.length
+    ? context.peers.map((p) => `- ${p.name} (${p.tier || 'tier unknown'}${p.area ? ', ' + p.area : ''})`).join('\n')
+    : '(none shown yet)';
+  const viewing = context.viewingPeer ? context.viewingPeer.name : 'none';
+
+  const routerPrompt = `You are the conversation router for a WhatsApp bot helping early learning practitioners and parents in South Africa (the Bana Pele program) access training and peer support.
+
+Output ONLY a single JSON object, nothing else -- no code fences, no extra text. Shape:
+{"intent": "...", "reference": "..." or null, "freeText": "..." or null}
+
+Valid intents:
+- "greeting" -- a hello/hi/starting the conversation, with no other specific request
+- "show_courses" -- wants to see available training programs
+- "enroll_course" -- wants to enroll/join/sign up for a specific course. Put the course name or reference (e.g. "the first one", "child safety") in "reference".
+- "check_status" -- wants to know their own enrollment/progress/tier
+- "mark_complete" -- says they finished/completed a course. Put the course reference in "reference".
+- "centre_help_request" -- describing a PERSONAL need for help setting up/improving THEIR OWN learning centre (not a general question about the topic). Put their exact message in "freeText".
+- "peer_list" -- wants to see/browse peers or people who could support them
+- "view_peer" -- asking about ONE SPECIFIC peer (by name, tier, or reference like "the second one"). Put the reference in "reference".
+- "connect_peer" -- wants to connect/talk/reach out to a specific peer, or is confirming they want to connect with whoever they were just told about. Put the reference in "reference" (null if clearly referring to whoever they're currently viewing).
+- "general_question" -- a genuine informational question (funding, requirements, ECD advice, etc.), not about their own account or a specific peer. Put their exact message in "freeText".
+- "unclear" -- genuinely can't tell what they want from this message
+
+Current context for this person:
+Courses recently shown to them:
+${coursesList}
+
+Peers recently shown to them:
+${peersList}
+
+Currently looking at this peer's profile: ${viewing}`;
+
+  const raw = await callClaude(routerPrompt, message, { maxTokens: 300 });
+  const cleaned = raw.replace(/```json|```/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    throw new Error('Failed to parse routing decision: ' + raw);
+  }
+}
+
+// Matches a natural reference ("the gold tier one", "marizanne", "2")
+// against a list of courses/peers shown earlier in the conversation.
+// Returns null (rather than guessing) if it can't find a confident,
+// unambiguous match -- callers handle that by asking for clarification.
+function resolveReference(reference, list, nameOf) {
+  if (!reference || !list || list.length === 0) return null;
+  const ref = String(reference).trim().toLowerCase();
+
+  if (/^\d+$/.test(ref)) return list[parseInt(ref, 10) - 1] || null;
+  const ordinals = { first: 0, second: 1, third: 2, fourth: 3, fifth: 4, '1st': 0, '2nd': 1, '3rd': 2, '4th': 3, '5th': 4 };
+  if (ordinals[ref] != null) return list[ordinals[ref]] || null;
+
+  const matches = list.filter((item) => {
+    const name = nameOf(item).toLowerCase();
+    return name.includes(ref) || ref.includes(name);
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function handleConversationalFlow(from, trimmed, session) {
+  const context = {
+    courses: session.lastCourses || [],
+    peers: session.lastPeerList || [],
+    viewingPeer: session.viewingPeer || null,
+  };
+  const decision = await classifyConversation(trimmed, context);
+
+  switch (decision.intent) {
+    case 'greeting':
+      return sendWhatsAppMessage(
+        from,
+        "Hi there! 😊 I'm here to help you with training programs, checking your progress, setting up a learning centre, or connecting with a peer for support. What can I help you with today?"
+      );
+    case 'show_courses':
+      return respondShowCourses(from, session);
+    case 'enroll_course':
+      return respondEnrollCourse(from, session, decision.reference);
+    case 'check_status':
+      return respondCheckStatus(from, session);
+    case 'mark_complete':
+      return respondMarkComplete(from, session, decision.reference);
+    case 'centre_help_request':
+      return respondCentreHelpRequest(from, session, decision.freeText || trimmed);
+    case 'peer_list':
+      return respondPeerList(from, session);
+    case 'view_peer':
+      return respondViewPeer(from, session, decision.reference);
+    case 'connect_peer':
+      return respondConnectPeer(from, session, decision.reference);
+    case 'general_question':
+      return respondGeneralQuestion(from, decision.freeText || trimmed);
+    case 'unclear':
+    default:
+      return sendWhatsAppMessage(
+        from,
+        "I want to make sure I help with the right thing -- are you looking for training programs, checking your status, help setting up a learning centre, or connecting with a peer for support?"
+      );
+  }
+}
+
+async function respondShowCourses(from, session) {
+  const courses = await discoverCourses(session.token);
+  session.lastCourses = courses.map((c) => ({ id: c.id, name: c.name }));
+  if (courses.length === 0) return sendWhatsAppMessage(from, "There aren't any training programs available right now -- check back soon!");
+  const lines = courses.map((c) => `- ${c.name}`).join('\n');
+  return sendWhatsAppMessage(from, `Here's what's currently available:\n\n${lines}\n\nJust tell me which one you'd like to enroll in, or ask me anything about them!`);
+}
+
+async function respondEnrollCourse(from, session, reference) {
+  let course = resolveReference(reference, session.lastCourses, (c) => c.name);
+  if (!course && (!session.lastCourses || session.lastCourses.length === 0)) {
+    const courses = await discoverCourses(session.token);
+    session.lastCourses = courses.map((c) => ({ id: c.id, name: c.name }));
+    course = resolveReference(reference, session.lastCourses, (c) => c.name);
+  }
+  if (!course && session.lastCourses.length === 1) course = session.lastCourses[0];
+  if (!course) {
+    const lines = session.lastCourses.map((c) => `- ${c.name}`).join('\n') || '(none shown yet -- want me to show you what\'s available?)';
+    return sendWhatsAppMessage(from, `I'm not totally sure which course you mean. Here's what's available:\n\n${lines}\n\nWhich one would you like to enroll in?`);
+  }
+  await enrollInCourse(session.token, course.id);
+  return sendWhatsAppMessage(from, `Enrollment request sent for "${course.name}" ⏳ — awaiting approval from the training authority. Just ask me anytime to check your status.`);
+}
+
+async function respondCheckStatus(from, session) {
+  const state = await fetchState(session.token);
+  const entries = Object.entries(state.courseProgress || {});
+  if (entries.length === 0) return sendWhatsAppMessage(from, "You haven't enrolled in anything yet -- want me to show you what's available?");
+  const lines = entries.map(([courseId, progress]) => {
+    const name = (session.lastCourses.find((c) => c.id === courseId) || {}).name || courseId;
+    return `- ${name}: ${progress.status}`;
+  }).join('\n');
+  return sendWhatsAppMessage(from, `Here's where things stand for you (currently ${state.tier} tier):\n\n${lines}`);
+}
+
+async function respondMarkComplete(from, session, reference) {
+  let course = resolveReference(reference, session.lastCourses, (c) => c.name);
+  if (!course) {
+    const state = await fetchState(session.token);
+    const entries = Object.entries(state.courseProgress || {});
+    if (entries.length === 1) {
+      const [courseId] = entries[0];
+      course = (session.lastCourses || []).find((c) => c.id === courseId) || { id: courseId, name: courseId };
+    }
+  }
+  if (!course) return sendWhatsAppMessage(from, "I'm not sure which course you mean -- could you tell me its name, or ask me to check your status first?");
+  await markComplete(session.token, course.id);
+  return sendWhatsAppMessage(from, `Marked "${course.name}" as complete ✅ — sent to the training authority for approval.`);
+}
+
+async function respondCentreHelpRequest(from, session, description) {
+  const reqId = nextCentreRequestId();
+  const newRequest = {
+    id: reqId,
+    learnerPhone: from,
+    learnerName: session.name || from,
+    description,
+    status: 'new',
+    assignedPhone: null,
+    assignedName: null,
+  };
+  centreRequests.push(newRequest);
+  persistCentreRequest(newRequest);
+  if (ADMIN_PHONE) {
+    await sendWhatsAppMessage(
+      ADMIN_PHONE,
+      `📋 New centre-setup request ${reqId} from ${session.name || from}:\n"${description}"\n\n` +
+        `Reply "assign me ${reqId}" to take it yourself, or "forward ${reqId}" to send it to registered experts.`
+    );
+  } else {
+    console.warn('[wa-bot] ADMIN_PHONE not set -- new centre request created but nobody was notified:', reqId);
+  }
+  return sendWhatsAppMessage(from, "Thanks! We've noted what you need help with, and someone from our team will reach out here soon.");
+}
+
+async function respondPeerList(from, session) {
+  const peers = await discoverPeers(session.token);
+  session.lastPeerList = peers;
+  session.viewingPeer = null;
+  if (peers.length === 0) return sendWhatsAppMessage(from, "There aren't any peers available yet -- check back soon!");
+  const lines = peers
+    .map((p) => {
+      const tier = p.tier ? `${p.tier} tier` : '';
+      const area = p.area ? `, ${p.area}` : '';
+      return `- ${p.name} (${tier}${area})`;
+    })
+    .join('\n');
+  return sendWhatsAppMessage(from, `Here are some people you could connect with for support:\n\n${lines}\n\nJust tell me who you'd like to know more about, or say you'd like to connect with one of them!`);
+}
+
+async function respondViewPeer(from, session, reference) {
+  let peer = resolveReference(reference, session.lastPeerList, (p) => p.name);
+  if (!peer) {
+    const peers = await discoverPeers(session.token);
+    session.lastPeerList = peers;
+    peer = resolveReference(reference, peers, (p) => p.name);
+  }
+  if (!peer) return sendWhatsAppMessage(from, "I'm not sure who you mean -- want me to show you the list of peers again?");
+  session.viewingPeer = peer;
+  const profile = formatPeerProfile(peer).replace(
+    'Reply "connect" to request to connect with them, or 0 to go back to the peer list.',
+    "Just let me know if you'd like to connect with them, or ask me about someone else!"
+  );
+  return sendWhatsAppMessage(from, profile);
+}
+
+async function respondConnectPeer(from, session, reference) {
+  let peer = resolveReference(reference, session.lastPeerList, (p) => p.name);
+  if (!peer && session.viewingPeer) peer = session.viewingPeer;
+  if (!peer) {
+    const peers = await discoverPeers(session.token);
+    session.lastPeerList = peers;
+    peer = resolveReference(reference, peers, (p) => p.name);
+  }
+  if (!peer) return sendWhatsAppMessage(from, "I'm not sure who you'd like to connect with -- want me to show you the list of peers?");
+  session.viewingPeer = null;
+  return requestPeerConnect(from, session.name || from, peer);
+}
+
+async function respondGeneralQuestion(from, question) {
+  try {
+    const reply = await callClaude(GENERAL_SYSTEM_PROMPT, question, { useWebSearch: true });
+    logQA(from, question, reply); // fire-and-forget, never blocks the reply
+    return sendWhatsAppMessage(from, reply);
+  } catch (err) {
+    console.error('[wa-bot] general question failed:', err.message);
+    return sendWhatsAppMessage(from, "Sorry, I'm having trouble answering that right now -- could you try again in a moment?");
+  }
+}
+
 // ---- talking to demo-bap-server.js (the same 5 endpoints the Flutter
 // app uses -- see beckn_bap_api.dart and auth_api.dart) ----
 
@@ -696,6 +950,24 @@ async function handleIncomingMessageInner(from, text) {
   const session = await ensureLoggedIn(from);
   displayNames.set(from, session.name || from);
 
+  if (ANTHROPIC_API_KEY) {
+    try {
+      return await handleConversationalFlow(from, trimmed, session);
+    } catch (err) {
+      console.error('[wa-bot] conversational flow failed, falling back to menu flow:', err.message);
+      // fall through to the old, fully deterministic menu flow below so
+      // a routing failure never leaves the learner with no response
+    }
+  }
+
+  return handleMenuDrivenFlow(from, trimmed, lower, session);
+}
+
+// ---- Old, fully menu-driven flow (numbers, exact keywords). Kept as a
+// complete, working fallback for when ANTHROPIC_API_KEY isn't set, or if
+// the conversational router itself fails for some reason -- the bot
+// should never go silent just because the AI layer had a problem. ----
+async function handleMenuDrivenFlow(from, trimmed, lower, session) {
   // A learner just replied with their centre-help description (free text,
   // right after choosing option 3). Checked before any digit/menu logic
   // since the description itself might just be a number or short word.
