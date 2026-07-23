@@ -125,6 +125,14 @@ function getPractitioner(id, name) {
       name: name || id,
       currentTier: 'Bronze',
       courseStatus: 'not_started', // not_started -> enrolled -> completed
+      // Peer-support profile -- set by the PROVIDER (via the dashboard),
+      // never by the learner or the WhatsApp bot. Only meaningful once
+      // set for Silver/Gold tier practitioners who can mentor others.
+      area: null,
+      yearsExperience: null,
+      elpType: null,
+      hubs: [],
+      certifications: [],
     });
     persistPractitioner(practitioners.get(id));
   }
@@ -137,7 +145,21 @@ function getPractitioner(id, name) {
 }
 
 function persistPractitioner(p) {
-  dbUpsert('practitioners', { id: p.id, name: p.name, current_tier: p.currentTier, course_status: p.courseStatus }, 'id');
+  dbUpsert(
+    'practitioners',
+    {
+      id: p.id,
+      name: p.name,
+      current_tier: p.currentTier,
+      course_status: p.courseStatus,
+      area: p.area,
+      years_experience: p.yearsExperience,
+      elp_type: p.elpType,
+      hubs: p.hubs || [],
+      certifications: p.certifications || [],
+    },
+    'id'
+  );
 }
 
 // Pulls { id, name } out of the incoming Contract's first participant
@@ -275,12 +297,54 @@ function buildResponse(action, incomingContext, incomingMessage) {
   };
 
   if (action === 'discover') {
+    const intent = (incomingMessage && incomingMessage.intent) || {};
+
+    // Real Beckn discover can search across different categories --
+    // we use this same mechanism to let the buyer ask for "peers"
+    // (other practitioners open to mentoring) instead of courses,
+    // without needing a whole separate protocol action for it.
+    if (intent.category === 'peers') {
+      const peers = Array.from(practitioners.values()).filter(
+        (p) => p.currentTier !== 'Bronze' && p.area // only show practitioners the provider has actually set a peer profile for
+      );
+      return {
+        context,
+        message: {
+          catalogs: [
+            {
+              id: 'catalog-peer-provider-001',
+              descriptor: { name: 'Peer Support Directory' },
+              provider: {
+                id: 'course-provider-001',
+                descriptor: { name: 'ELP Training Provider' },
+              },
+              resources: peers.map((p) => ({
+                id: p.id,
+                descriptor: { name: p.name },
+                // Not part of the standard Beckn Resource schema -- a
+                // custom field, same approach as the tier-upgrade field
+                // on on_confirm, so the peer profile travels along with
+                // the resource instead of needing a second round trip.
+                peerProfile: {
+                  tier: p.currentTier,
+                  area: p.area,
+                  yearsExperience: p.yearsExperience,
+                  elpType: p.elpType,
+                  hubs: p.hubs || [],
+                  certifications: p.certifications || [],
+                },
+              })),
+            },
+          ],
+        },
+      };
+    }
+
     // Buyer is searching -- the search term (if any) arrives in
     // message.intent.textSearch (a plain string per the real Intent
     // schema). We filter our catalog down to courses whose name
     // matches (case-insensitive, partial match). An empty/missing
     // search term returns the full catalog.
-    const intent = (incomingMessage && incomingMessage.intent) || {};
     const searchTerm = (intent.textSearch || '').trim().toLowerCase();
 
     const matchingCourses = searchTerm
@@ -531,6 +595,42 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Lets the provider set/edit a practitioner's peer-support profile
+  // from the dashboard -- this is the ONLY way this data gets set. It
+  // never comes from the learner or the WhatsApp bot directly.
+  const peerProfileMatch = req.url.match(/^\/api\/practitioners\/([^/?]+)\/peer-profile/);
+  if (req.method === 'POST' && peerProfileMatch) {
+    const practitionerId = decodeURIComponent(peerProfileMatch[1]);
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+      const p = practitioners.get(practitionerId);
+      if (!p) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `No practitioner found with id ${practitionerId}` }));
+        return;
+      }
+      p.area = parsed.area || null;
+      p.yearsExperience = parsed.yearsExperience != null ? Number(parsed.yearsExperience) : null;
+      p.elpType = parsed.elpType || null;
+      p.hubs = Array.isArray(parsed.hubs) ? parsed.hubs : [];
+      p.certifications = Array.isArray(parsed.certifications) ? parsed.certifications : [];
+      persistPractitioner(p);
+      console.log(`[course-bpp] provider set peer profile for practitioner ${practitionerId}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'updated', practitioner: p }));
+    });
+    return;
+  }
+
   // Only look at the path itself, ignore any query string (?foo=bar)
   // or trailing slash, since onix-bpp may attach one.
   const path = req.url.split('?')[0].replace(/\/$/, '');
@@ -669,7 +769,17 @@ async function loadStateFromDb() {
 
   const dbPractitioners = await dbSelect('practitioners');
   dbPractitioners.forEach((p) => {
-    practitioners.set(p.id, { id: p.id, name: p.name, currentTier: p.current_tier, courseStatus: p.course_status });
+    practitioners.set(p.id, {
+      id: p.id,
+      name: p.name,
+      currentTier: p.current_tier,
+      courseStatus: p.course_status,
+      area: p.area,
+      yearsExperience: p.years_experience,
+      elpType: p.elp_type,
+      hubs: p.hubs || [],
+      certifications: p.certifications || [],
+    });
   });
 
   const dbPending = await dbSelect('pending_requests');
