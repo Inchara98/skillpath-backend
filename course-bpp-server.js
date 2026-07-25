@@ -117,6 +117,49 @@ const course = catalog[0];
 // "demo-guest" fallback) keeps behaving exactly as before.
 const practitioners = new Map();
 
+// Provider-managed directories -- same idea as practitioners' peer
+// profiles, but these entries are NOT enrolled learners at all. A
+// donor/space owner is added directly by the provider (via the
+// endpoints below), and carries its OWN contact info, since there's no
+// "learner account" to cross-reference for a phone number the way
+// peers work.
+const donors = new Map(); // id -> { id, name, supportType, area, contactPhone, contactEmail, description }
+const spaces = new Map(); // id -> { id, name, spaceType, area, address, capacity, contactName, contactPhone, availability }
+
+function persistDonor(d) {
+  dbUpsert(
+    'donors',
+    {
+      id: d.id,
+      name: d.name,
+      support_type: d.supportType,
+      area: d.area,
+      contact_phone: d.contactPhone,
+      contact_email: d.contactEmail,
+      description: d.description,
+    },
+    'id'
+  );
+}
+
+function persistSpace(s) {
+  dbUpsert(
+    'spaces',
+    {
+      id: s.id,
+      name: s.name,
+      space_type: s.spaceType,
+      area: s.area,
+      address: s.address,
+      capacity: s.capacity,
+      contact_name: s.contactName,
+      contact_phone: s.contactPhone,
+      availability: s.availability,
+    },
+    'id'
+  );
+}
+
 function getPractitioner(id, name) {
   if (!id) id = 'naledi-001'; // defensive fallback, shouldn't normally happen
   if (!practitioners.has(id)) {
@@ -332,6 +375,60 @@ function buildResponse(action, incomingContext, incomingMessage) {
                   elpType: p.elpType,
                   hubs: p.hubs || [],
                   certifications: p.certifications || [],
+                },
+              })),
+            },
+          ],
+        },
+      };
+    }
+
+    if (intent.category === 'donors') {
+      return {
+        context,
+        message: {
+          catalogs: [
+            {
+              id: 'catalog-donor-provider-001',
+              descriptor: { name: 'Donor & Resource Support Directory' },
+              provider: { id: 'course-provider-001', descriptor: { name: 'ELP Training Provider' } },
+              resources: Array.from(donors.values()).map((d) => ({
+                id: d.id,
+                descriptor: { name: d.name },
+                donorProfile: {
+                  supportType: d.supportType,
+                  area: d.area,
+                  contactPhone: d.contactPhone,
+                  contactEmail: d.contactEmail,
+                  description: d.description,
+                },
+              })),
+            },
+          ],
+        },
+      };
+    }
+
+    if (intent.category === 'spaces') {
+      return {
+        context,
+        message: {
+          catalogs: [
+            {
+              id: 'catalog-space-provider-001',
+              descriptor: { name: 'Community Space Directory' },
+              provider: { id: 'course-provider-001', descriptor: { name: 'ELP Training Provider' } },
+              resources: Array.from(spaces.values()).map((s) => ({
+                id: s.id,
+                descriptor: { name: s.name },
+                spaceProfile: {
+                  spaceType: s.spaceType,
+                  area: s.area,
+                  address: s.address,
+                  capacity: s.capacity,
+                  contactName: s.contactName,
+                  contactPhone: s.contactPhone,
+                  availability: s.availability,
                 },
               })),
             },
@@ -627,9 +724,71 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Only look at the path itself, ignore any query string (?foo=bar)
-  // or trailing slash, since onix-bpp may attach one.
-  const path = req.url.split('?')[0].replace(/\/$/, '');
+  // Provider creates/edits a donor entry -- a donor is never a learner,
+  // so there's nothing to "look up first" like practitioners -- this
+  // always creates the record if it doesn't already exist.
+  const donorMatch = req.url.match(/^\/api\/donors\/([^/?]+)/);
+  if (req.method === 'POST' && donorMatch) {
+    const donorId = decodeURIComponent(donorMatch[1]);
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+      const d = donors.get(donorId) || { id: donorId };
+      d.name = parsed.name || d.name || donorId;
+      d.supportType = parsed.supportType || null;
+      d.area = parsed.area || null;
+      d.contactPhone = parsed.contactPhone || null;
+      d.contactEmail = parsed.contactEmail || null;
+      d.description = parsed.description || null;
+      donors.set(donorId, d);
+      persistDonor(d);
+      console.log(`[course-bpp] provider set donor entry for ${donorId}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'updated', donor: d }));
+    });
+    return;
+  }
+
+  // Provider creates/edits a community-space entry, same pattern as donors.
+  const spaceMatch = req.url.match(/^\/api\/spaces\/([^/?]+)/);
+  if (req.method === 'POST' && spaceMatch) {
+    const spaceId = decodeURIComponent(spaceMatch[1]);
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+        return;
+      }
+      const s = spaces.get(spaceId) || { id: spaceId };
+      s.name = parsed.name || s.name || spaceId;
+      s.spaceType = parsed.spaceType || null;
+      s.area = parsed.area || null;
+      s.address = parsed.address || null;
+      s.capacity = parsed.capacity || null;
+      s.contactName = parsed.contactName || null;
+      s.contactPhone = parsed.contactPhone || null;
+      s.availability = parsed.availability || null;
+      spaces.set(spaceId, s);
+      persistSpace(s);
+      console.log(`[course-bpp] provider set space entry for ${spaceId}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'updated', space: s }));
+    });
+    return;
+  }
 
   // onix-bpp calls a path like /api/webhook/select, /api/webhook/init,
   // /api/webhook/confirm -- the action name is the last part of the URL.
@@ -778,6 +937,34 @@ async function loadStateFromDb() {
     });
   });
 
+  const dbDonors = await dbSelect('donors');
+  dbDonors.forEach((d) => {
+    donors.set(d.id, {
+      id: d.id,
+      name: d.name,
+      supportType: d.support_type,
+      area: d.area,
+      contactPhone: d.contact_phone,
+      contactEmail: d.contact_email,
+      description: d.description,
+    });
+  });
+
+  const dbSpaces = await dbSelect('spaces');
+  dbSpaces.forEach((s) => {
+    spaces.set(s.id, {
+      id: s.id,
+      name: s.name,
+      spaceType: s.space_type,
+      area: s.area,
+      address: s.address,
+      capacity: s.capacity,
+      contactName: s.contact_name,
+      contactPhone: s.contact_phone,
+      availability: s.availability,
+    });
+  });
+
   const dbPending = await dbSelect('pending_requests');
   dbPending.forEach((p) => {
     pendingRequests.push({
@@ -793,7 +980,7 @@ async function loadStateFromDb() {
   });
 
   console.log(
-    `[course-bpp] loaded from database: ${catalog.length} courses, ${practitioners.size} practitioners, ${pendingRequests.length} pending requests`
+    `[course-bpp] loaded from database: ${catalog.length} courses, ${practitioners.size} practitioners, ${pendingRequests.length} pending requests, ${donors.size} donors, ${spaces.size} spaces`
   );
 }
 
