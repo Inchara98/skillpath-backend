@@ -158,6 +158,8 @@ function persistLearner(learner) {
       transaction_id: learner.transactionId,
       catalog: learner.catalog,
       peer_catalog: learner.peerCatalog,
+      donor_catalog: learner.donorCatalog,
+      space_catalog: learner.spaceCatalog,
       course_progress: learner.courseProgress,
       tier: learner.tier,
       log: learner.log,
@@ -291,6 +293,10 @@ async function triggerAction(learner, action, extra = {}) {
     // clear whichever one is actually being searched for.
     if (extra.category === 'peers') {
       learner.peerCatalog = null;
+    } else if (extra.category === 'donors') {
+      learner.donorCatalog = null;
+    } else if (extra.category === 'spaces') {
+      learner.spaceCatalog = null;
     } else {
       learner.catalog = null;
     }
@@ -378,6 +384,22 @@ function handleCallback(action, incoming) {
           ...(r.peerProfile || {}),
         };
       });
+    } else if (firstCatalog && firstCatalog.id === 'catalog-donor-provider-001') {
+      // Donors aren't learners -- they carry their own contact info
+      // directly on the resource, no phone lookup needed at all.
+      const resources = firstCatalog.resources || [];
+      learner.donorCatalog = resources.map((r) => ({
+        id: r.id,
+        name: (r.descriptor && r.descriptor.name) || r.id,
+        ...(r.donorProfile || {}),
+      }));
+    } else if (firstCatalog && firstCatalog.id === 'catalog-space-provider-001') {
+      const resources = firstCatalog.resources || [];
+      learner.spaceCatalog = resources.map((r) => ({
+        id: r.id,
+        name: (r.descriptor && r.descriptor.name) || r.id,
+        ...(r.spaceProfile || {}),
+      }));
     } else {
       // Flatten every provider's resources into a simple list of courses
       // for our simple single-provider demo.
@@ -1126,6 +1148,8 @@ const server = http.createServer((req, res) => {
       transactionId: learner.transactionId,
       catalog: learner.catalog,
       peerCatalog: learner.peerCatalog,
+      donorCatalog: learner.donorCatalog,
+      spaceCatalog: learner.spaceCatalog,
       courseProgress: learner.courseProgress,
       tier: learner.tier,
       log: learner.log,
@@ -1207,6 +1231,8 @@ async function loadStateFromDb() {
       transactionId: row.transaction_id,
       catalog: row.catalog,
       peerCatalog: row.peer_catalog,
+      donorCatalog: row.donor_catalog,
+      spaceCatalog: row.space_catalog,
       courseProgress: row.course_progress || {},
       tier: row.tier || 'Bronze',
       log: row.log || [],
