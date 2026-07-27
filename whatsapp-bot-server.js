@@ -895,6 +895,23 @@ async function respondDonorChoice(from, session, replyText) {
   }
 
   if (choice === 'raise_request') {
+    // Shows up in the same Provider App dashboard as any other request --
+    // this is the actual "goes to the provider app" mechanism (a
+    // persisted record the dashboard reads), separate from and not
+    // requiring any WhatsApp message to ADMIN_PHONE.
+    const reqId = nextCentreRequestId();
+    const newRequest = {
+      id: reqId,
+      learnerPhone: from,
+      learnerName: session.name || from,
+      description: `[Donation request] ${fullDescription}`,
+      status: 'new',
+      assignedPhone: null,
+      assignedName: null,
+    };
+    centreRequests.push(newRequest);
+    persistCentreRequest(newRequest);
+
     try {
       await bapFetch('/api/trigger/donation-request', {
         method: 'POST',
