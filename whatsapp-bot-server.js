@@ -620,7 +620,7 @@ async function handleConversationalFlow(from, trimmed, session) {
         "Hi there! 😊 I'm here to help with training programs, funding/donor connections, community spaces, peer support, and general Bana Pele questions. What can I help you with today?"
       );
     case 'program_question':
-      return respondGeneralQuestion(from, decision.freeText || trimmed);
+      return respondGeneralQuestion(from, decision.freeText || trimmed, context.lastBotMessage);
     case 'show_courses':
       return respondShowCourses(from, session);
     case 'enroll_course':
@@ -650,7 +650,7 @@ async function handleConversationalFlow(from, trimmed, session) {
     case 'support_request':
       return respondSupportRequestStart(from, session, decision.freeText || trimmed);
     case 'general_question':
-      return respondGeneralQuestion(from, decision.freeText || trimmed);
+      return respondGeneralQuestion(from, decision.freeText || trimmed, context.lastBotMessage);
     case 'unclear':
     default:
       return sendWhatsAppMessage(
@@ -1129,9 +1129,16 @@ async function respondConnectPeer(from, session, reference) {
   return requestPeerConnect(from, session.name || from, peer);
 }
 
-async function respondGeneralQuestion(from, question) {
+async function respondGeneralQuestion(from, question, lastBotMessage) {
   try {
-    const reply = await callClaude(GENERAL_SYSTEM_PROMPT, question, { useWebSearch: true });
+    // Without this, Claude has zero memory of anything session-specific
+    // (like a tracking ID it just generated) -- grounding the question in
+    // what was actually just said lets it answer confidently instead of
+    // claiming it has no visibility into the conversation at all.
+    const groundedQuestion = lastBotMessage
+      ? `For context, here is what you (the assistant) just said to this person in this same conversation:\n"${lastBotMessage}"\n\nTheir question, in light of that: ${question}`
+      : question;
+    const reply = await callClaude(GENERAL_SYSTEM_PROMPT, groundedQuestion, { useWebSearch: true });
     logQA(from, question, reply); // fire-and-forget, never blocks the reply
     return sendWhatsAppMessage(from, reply);
   } catch (err) {
