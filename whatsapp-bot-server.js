@@ -683,7 +683,7 @@ async function respondSupportRequest(from, session, description) {
   if (ADMIN_PHONE) {
     await sendWhatsAppMessage(
       ADMIN_PHONE,
-      `📋 New centre-setup request ${reqId} from ${session.name || from}:\n"${description}"\n\n` +
+      `📋 New support request ${reqId} from ${session.name || from}:\n"${description}"\n\n` +
         `Reply "assign me ${reqId}" to take it yourself, or "forward ${reqId}" to send it to registered experts.`
     );
   } else {
