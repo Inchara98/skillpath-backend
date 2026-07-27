@@ -824,25 +824,32 @@ async function respondDonorNeedStart(from, session, initialDescription) {
 }
 
 // Pulls a rough amount/deadline/region out of the person's free-form
-// detail message, for display in the NGO's own dashboard. Best-effort --
-// if extraction fails for any reason, the full raw text is still sent
-// through as the request description, so nothing gets lost either way.
+// detail messages, AND synthesizes a clean one-line description --
+// since the raw combined text is literally every message across
+// however many back-and-forth rounds it took (including asides like
+// "is it required?"), which reads as a messy transcript rather than a
+// usable request. Best-effort -- if extraction fails for any reason,
+// the raw text is still used as a fallback description, so nothing
+// gets lost either way.
 async function extractDonationDetails(text) {
-  const prompt = `Extract structured details from this donation request. Respond with ONLY a JSON object, nothing else, in exactly this shape:
-{"amount": "...", "deadline": "...", "region": "..."}
-Use an empty string for anything not mentioned. Do not include any other text, explanation, or markdown formatting.`;
+  const prompt = `This is a conversation transcript from someone raising a donation request -- it may include several back-and-forth messages, some of which are just asides or questions (like asking whether these details are required), not part of the actual need. Respond with ONLY a JSON object, nothing else, in exactly this shape:
+{"amount": "...", "deadline": "...", "region": "...", "description": "..."}
+- amount/deadline/region: empty string if not mentioned.
+- description: ONE clean, concise sentence summarizing what's actually needed -- ignore conversational asides, meta-questions, or filler. Just the real request, e.g. "Shoes and bags for 3 students, ₹10000 needed by 1 August."
+Do not include any other text, explanation, or markdown formatting.`;
   try {
-    const raw = await callClaude(prompt, text, { maxTokens: 150 });
+    const raw = await callClaude(prompt, text, { maxTokens: 200 });
     const cleaned = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
       amount: parsed.amount || '',
       deadline: parsed.deadline || '',
       region: parsed.region || '',
+      description: parsed.description || text,
     };
   } catch (err) {
-    console.error('[wa-bot] failed to extract donation details, sending raw text only:', err.message);
-    return { amount: '', deadline: '', region: '' };
+    console.error('[wa-bot] failed to extract donation details, using raw transcript as description:', err.message);
+    return { amount: '', deadline: '', region: '', description: text };
   }
 }
 
@@ -869,7 +876,7 @@ async function respondDonationDetail(from, session, detailText) {
 
   session.awaitingDonationDetail = false;
   session.donationDraftDescription = null;
-  session.donationFullDescription = combined;
+  session.donationFullDescription = parsed.description;
   session.donationParsedDetails = parsed;
   session.awaitingDonorChoice = true;
   return sendWhatsAppMessage(
