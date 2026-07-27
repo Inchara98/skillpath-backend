@@ -175,6 +175,7 @@ function getSession(phone) {
       awaitingDonorChoice: false,
       awaitingDonationDetail: false,
       donationDraftDescription: null,
+      donationDetailAttempts: 0,
       donationFullDescription: null,
       donationParsedDetails: null,
     });
@@ -870,18 +871,26 @@ Respond with ONLY a JSON object, nothing else, in exactly this shape:
 // request that also reaches the region's NGO directly.
 async function respondDonationDetail(from, session, detailText) {
   const combined = `${session.donationDraftDescription || ''}\n${detailText}`.trim();
+  session.donationDetailAttempts = (session.donationDetailAttempts || 0) + 1;
 
-  const assessment = await assessDonationDetailSufficiency(combined);
-  if (!assessment.sufficient) {
-    session.donationDraftDescription = combined;
-    return sendWhatsAppMessage(
-      from,
-      assessment.followUp || "Could you share a bit more detail -- specifically what's needed and roughly by when?"
-    );
+  // Only ever ask ONE clarifying follow-up. Repeating a rephrased
+  // version of the same question feels robotic, not natural -- and
+  // someone who pushes back or can't give an exact figure should still
+  // be able to move forward with whatever they've given us.
+  if (session.donationDetailAttempts < 2) {
+    const assessment = await assessDonationDetailSufficiency(combined);
+    if (!assessment.sufficient) {
+      session.donationDraftDescription = combined;
+      return sendWhatsAppMessage(
+        from,
+        assessment.followUp || "Could you share a bit more detail -- specifically what's needed and roughly by when?"
+      );
+    }
   }
 
   session.awaitingDonationDetail = false;
   session.donationDraftDescription = null;
+  session.donationDetailAttempts = 0;
   session.donationFullDescription = combined;
   session.donationParsedDetails = await extractDonationDetails(combined);
   session.awaitingDonorChoice = true;
