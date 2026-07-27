@@ -103,6 +103,18 @@ const BPP_URI = 'http://onix-bpp:8082/bpp/receiver';
 // course-bpp-server's real public URL via an environment variable.
 const BPP_BASE_URL = process.env.BPP_BASE_URL || 'http://localhost:3002';
 
+// ---- The NGO BPP -- a second provider in the network, alongside
+// course-bpp. Same direct hand-off convention: NGO_BPP_CALLER points
+// straight at ngo-bpp-server's own /api/webhook base.
+const NGO_BPP_CALLER = process.env.NGO_BPP_CALLER || 'http://localhost:3003/api/webhook';
+const NGO_BPP_ID = 'ngo.example.com';
+const NGO_BPP_URI = 'http://onix-ngo:8083/bpp/receiver';
+
+// Where whatsapp-bot-server.js is reachable -- used ONLY to relay an
+// on_update push (NGO accepted / paid) into an actual WhatsApp message,
+// since demo-bap itself has no way to send WhatsApp messages directly.
+const WA_BOT_BASE_URL = process.env.WA_BOT_BASE_URL || 'http://localhost:4000';
+
 // =====================================================================
 // ---- OTP auth (demo-grade: fixed code, no expiry, no real SMS) ----
 // =====================================================================
@@ -247,6 +259,25 @@ function buildContext(learner, action) {
   };
 }
 
+// Same shape as buildContext, but addressed to the NGO BPP instead of
+// course-bpp -- this is what makes it a genuine second provider in the
+// network rather than a special case bolted onto the course flow.
+function buildNgoContext(learner, action) {
+  return {
+    networkId: NETWORK_ID,
+    action,
+    version: '2.0.0',
+    bapId: BAP_ID,
+    bapUri: BAP_URI,
+    bppId: NGO_BPP_ID,
+    bppUri: NGO_BPP_URI,
+    transactionId: learner.transactionId,
+    messageId: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    ttl: 'PT30S',
+  };
+}
+
 // Builds a minimal but real Beckn Contract object referencing the
 // selected course -- required by the select/init/confirm schemas.
 // Now takes the actual learner instead of a hardcoded participant, so
@@ -351,6 +382,67 @@ async function triggerAction(learner, action, extra = {}) {
   });
 }
 
+// Starts a real Beckn transaction with the NGO BPP -- a genuinely
+// separate provider from course-bpp, same protocol. `details` comes
+// straight from whatsapp-bot: { description, amount, deadline, region }.
+async function triggerNgoDonation(learner, details) {
+  learner.transactionId = crypto.randomUUID();
+  transactionToLearner.set(learner.transactionId, learner.id);
+
+  const context = buildNgoContext(learner, 'init');
+  const message = {
+    participant: { id: learner.id, name: learner.name || 'Learner' },
+    donationRequest: {
+      description: details.description || '',
+      amount: details.amount || '',
+      deadline: details.deadline || '',
+      region: details.region || '',
+    },
+  };
+
+  const payload = { context, message };
+  addLog(learner, 'sent', 'init', payload);
+  persistLearner(learner);
+
+  const url = `${NGO_BPP_CALLER}/init`;
+  console.log(`[demo-bap] sending donation init to: ${url}`);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  console.log(`[demo-bap] donation init response status: ${res.status}`);
+}
+
+// Finalizes the transaction once the NGO BPP has acknowledged the
+// request with an id (see handleCallback's on_init branch below). The
+// business-meaningful status changes -- accepted, paid -- come later as
+// separate on_update pushes, not through this confirm step.
+async function confirmNgoDonation(learner) {
+  const context = buildNgoContext(learner, 'confirm');
+  const message = { requestId: learner.pendingNgoRequestId };
+  const payload = { context, message };
+  addLog(learner, 'sent', 'confirm', payload);
+  persistLearner(learner);
+
+  await fetch(`${NGO_BPP_CALLER}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+// demo-bap has no way to send a WhatsApp message itself -- this hands
+// that off to whatsapp-bot-server.js, which owns the actual Meta API
+// connection. Used only to relay an on_update push into a real message.
+async function notifyLearnerViaWhatsApp(phone, text) {
+  await fetch(`${WA_BOT_BASE_URL}/api/internal/notify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, message: text }),
+  });
+}
+
 // Handle an incoming on_* callback from onix-bap. Routed to the right
 // learner via the transactionId embedded in the callback's own context.
 function handleCallback(action, incoming) {
@@ -426,6 +518,32 @@ function handleCallback(action, incoming) {
         progress.blocked = false;
         progress.blockedMessage = '';
       }
+    } else if (message.donationRequest) {
+      // This on_init came from the NGO BPP, not course-bpp -- finalize
+      // the transaction with an automatic confirm. There's no manual
+      // approval step here; the real decision (accept/decline, pay)
+      // happens later on the NGO's own side and arrives as on_update.
+      learner.pendingNgoRequestId = message.requestId;
+      confirmNgoDonation(learner).catch((err) =>
+        console.error('[demo-bap] failed to auto-confirm NGO donation request:', err.message)
+      );
+    }
+  }
+
+  if (action === 'on_update' && message.requestId) {
+    const statusCode = message.status && message.status.code;
+    let text = null;
+    if (statusCode === 'ACCEPTED') {
+      text = '📋 Good news — an NGO has accepted your donation request and will be in touch soon.';
+    } else if (statusCode === 'PAID') {
+      text = '🎉 The NGO has completed the donation for your request!';
+    }
+    if (text && learner.phone) {
+      notifyLearnerViaWhatsApp(learner.phone, text).catch((err) =>
+        console.error('[demo-bap] failed to relay NGO update to WhatsApp:', err.message)
+      );
+    } else if (text && !learner.phone) {
+      console.error(`[demo-bap] got an NGO update for learner ${learner.id} but they have no phone on file -- can't notify them`);
     }
   }
 
@@ -1008,6 +1126,12 @@ const PAGE = `<!DOCTYPE html>
 const server = http.createServer((req, res) => {
   const path = req.url.split('?')[0].replace(/\/$/, '') || '/';
 
+  // Log every incoming request -- demo-bap didn't do this before, which
+  // made it hard to tell "request never arrived" apart from "request
+  // arrived but silently failed". course-bpp and ngo-bpp both already
+  // log this; demo-bap should too.
+  console.log(`[demo-bap] incoming request: ${req.method} ${req.url}`);
+
   // Open up CORS on every response, so a Flutter Web app (or anything
   // else) on a different origin can call these endpoints directly.
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1160,6 +1284,35 @@ const server = http.createServer((req, res) => {
   // Frontend button clicks land here. Some triggers (like a search)
   // send a small JSON body, e.g. { "query": "first aid" }.
   const triggerMatch = path.match(/^\/api\/trigger\/([a-zA-Z_]+)$/);
+  // Dedicated route for kicking off a real Beckn transaction with the
+  // NGO BPP -- kept separate from the generic /api/trigger/:action
+  // route above since the target BPP and message shape are both
+  // different (donationRequest, not a course contract).
+  if (req.method === 'POST' && path === '/api/trigger/donation-request') {
+    const learner = resolveLearner(req);
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let extra = {};
+      try {
+        extra = body ? JSON.parse(body) : {};
+      } catch (err) {
+        // Ignore malformed/empty body.
+      }
+      triggerNgoDonation(learner, extra)
+        .then(() => {
+          res.writeHead(202, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'sent' }));
+        })
+        .catch((err) => {
+          console.error('[demo-bap] failed to trigger NGO donation request:', err.message, '| cause:', err.cause);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && triggerMatch) {
     const action = triggerMatch[1];
     const learner = resolveLearner(req);
