@@ -175,6 +175,8 @@ function getSession(phone) {
       awaitingDonorChoice: false,
       awaitingDonationDetail: false,
       donationDraftDescription: null,
+      donationFullDescription: null,
+      donationParsedDetails: null,
     });
   }
   return sessions.get(phone);
@@ -801,67 +803,16 @@ async function respondSupportRequest(from, session, description) {
   return sendWhatsAppMessage(from, "Thanks! We've noted what you need help with, and someone from our team will reach out here soon.");
 }
 
-// Step 1: someone's just described a donation need. Ask up front whether
-// they want donor contact info to reach out themselves, or want a real
-// request raised -- which now also reaches the region's NGO directly,
-// not just our own team.
+// Step 1: someone's just described a donation need. Ask for the actual
+// detail first -- what's needed and by when -- same order as the
+// general support-request flow, so the choice question that follows
+// actually has something concrete to be a choice ABOUT.
 async function respondDonorNeedStart(from, session, initialDescription) {
   session.donationDraftDescription = initialDescription;
-  session.awaitingDonorChoice = true;
+  session.awaitingDonationDetail = true;
   return sendWhatsAppMessage(
     from,
-    "I can help with that. Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?"
-  );
-}
-
-// Narrow, deliberate classification for this specific yes/no-ish
-// question -- same reasoning as classifySupportChoice: a wrong guess
-// here either drops a described need or sends someone down the wrong
-// path, so it's worth a small dedicated check rather than folding it
-// into the general router.
-async function classifyDonorChoice(message) {
-  const prompt = `The person was just asked: "Would you like donor contact info, or would you rather I raise a formal donation request to the NGO and our team?"
-Classify their reply as exactly one of these words, nothing else: show_donors, raise_request, unclear`;
-  try {
-    const raw = await callClaude(prompt, message, { maxTokens: 10 });
-    const cleaned = raw.trim().toLowerCase();
-    if (cleaned.includes('raise') || cleaned.includes('request')) return 'raise_request';
-    if (cleaned.includes('donor') || cleaned.includes('contact') || cleaned.includes('show')) return 'show_donors';
-    return 'unclear';
-  } catch (err) {
-    console.error('[wa-bot] donor-choice classification failed, defaulting to showing the donor list:', err.message);
-    return 'show_donors'; // safest fallback -- the least disruptive path
-  }
-}
-
-// Step 2: acts on their choice.
-async function respondDonorChoice(from, session, replyText) {
-  session.awaitingDonorChoice = false;
-  const description = session.donationDraftDescription || replyText;
-  session.donationDraftDescription = null;
-
-  const choice = await classifyDonorChoice(replyText);
-
-  if (choice === 'raise_request') {
-    session.donationDraftDescription = description;
-    session.awaitingDonationDetail = true;
-    return sendWhatsAppMessage(
-      from,
-      "Sure. Could you tell me exactly what's needed and by when? For example: \"shoes and bags for 15 students, needed by 15 August\" or \"donation of ₹5000 by 10 August\"."
-    );
-  }
-
-  if (choice === 'show_donors') {
-    return respondDonorList(from, session);
-  }
-
-  // Genuinely unclear -- ask again rather than guess, keeping the
-  // description around so nothing they told us gets lost.
-  session.donationDraftDescription = description;
-  session.awaitingDonorChoice = true;
-  return sendWhatsAppMessage(
-    from,
-    'Sorry, just to make sure I do the right thing -- would you like (1) donor contact info, or (2) a formal request raised with the NGO and our team? Let me know which.'
+    "I can help with that. Could you tell me exactly what's needed and by when? For example: \"shoes and bags for 15 students, needed by 15 August\" or \"donation of ₹5000 by 10 August\"."
   );
 }
 
@@ -888,49 +839,101 @@ Use an empty string for anything not mentioned. Do not include any other text, e
   }
 }
 
-// Step 3: they've now given the amount/deadline detail. This is the one
-// that actually reaches the NGO -- notifies our own team exactly like
-// before, AND starts a real Beckn transaction (init -> confirm) with the
-// NGO's own BPP via demo-bap. The NGO accepting or paying comes back
-// later as a separate WhatsApp message, relayed through demo-bap's
-// on_update handling -- not synchronously from this reply.
+// Step 2: they've now given the detail. NOW ask the choice -- donor
+// contact info to reach out themselves, or a formal request that also
+// reaches the region's NGO directly.
 async function respondDonationDetail(from, session, detailText) {
   session.awaitingDonationDetail = false;
-  const description = session.donationDraftDescription || '';
+  const combined = `${session.donationDraftDescription || ''}\n${detailText}`.trim();
   session.donationDraftDescription = null;
+  session.donationFullDescription = combined;
+  session.donationParsedDetails = await extractDonationDetails(combined);
+  session.awaitingDonorChoice = true;
+  return sendWhatsAppMessage(
+    from,
+    "Thanks. Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?"
+  );
+}
 
-  const parsed = await extractDonationDetails(detailText);
-  const fullDescription = `${description}\n${detailText}`.trim();
-
-  if (ADMIN_PHONE) {
-    await sendWhatsAppMessage(
-      ADMIN_PHONE,
-      `📋 New donation request from ${session.name || from}:\n"${fullDescription}"`
-    );
-  }
-
+// Narrow, deliberate classification for this specific yes/no-ish
+// question -- same reasoning as classifySupportChoice: a wrong guess
+// here either drops a described need or sends someone down the wrong
+// path, so it's worth a small dedicated check rather than folding it
+// into the general router.
+async function classifyDonorChoice(message) {
+  const prompt = `The person was just asked: "Would you like donor contact info, or would you rather I raise a formal donation request to the NGO and our team?"
+Classify their reply as exactly one of these words, nothing else: show_donors, raise_request, unclear`;
   try {
-    await bapFetch('/api/trigger/donation-request', {
-      method: 'POST',
-      token: session.token,
-      body: {
-        description: fullDescription,
-        amount: parsed.amount,
-        deadline: parsed.deadline,
-        region: parsed.region,
-      },
-    });
-    return sendWhatsAppMessage(
-      from,
-      "Thanks! I've sent your request to our team and to the NGO covering your region. I'll message you here as soon as they respond or complete the donation."
-    );
+    const raw = await callClaude(prompt, message, { maxTokens: 10 });
+    const cleaned = raw.trim().toLowerCase();
+    if (cleaned.includes('raise') || cleaned.includes('request')) return 'raise_request';
+    if (cleaned.includes('donor') || cleaned.includes('contact') || cleaned.includes('show')) return 'show_donors';
+    return 'unclear';
   } catch (err) {
-    console.error('[wa-bot] failed to trigger NGO donation request:', err.message);
-    return sendWhatsAppMessage(
-      from,
-      "I've noted your request for our team, but I had trouble reaching the NGO system just now -- I'll keep trying and let you know here."
-    );
+    console.error('[wa-bot] donor-choice classification failed, defaulting to showing the donor list:', err.message);
+    return 'show_donors'; // safest fallback -- the least disruptive path
   }
+}
+
+// Step 3: acts on their choice. "Raise a request" is the one that
+// actually reaches the NGO -- notifies our own team exactly like
+// before, AND starts a real Beckn transaction (init -> confirm) with
+// the NGO's own BPP via demo-bap. The NGO accepting or paying comes
+// back later as a separate WhatsApp message, relayed through demo-bap's
+// on_update handling -- not synchronously from this reply.
+async function respondDonorChoice(from, session, replyText) {
+  session.awaitingDonorChoice = false;
+  const fullDescription = session.donationFullDescription || replyText;
+  const parsed = session.donationParsedDetails || { amount: '', deadline: '', region: '' };
+  session.donationFullDescription = null;
+  session.donationParsedDetails = null;
+
+  const choice = await classifyDonorChoice(replyText);
+
+  if (choice === 'show_donors') {
+    return respondDonorList(from, session);
+  }
+
+  if (choice === 'raise_request') {
+    if (ADMIN_PHONE) {
+      await sendWhatsAppMessage(
+        ADMIN_PHONE,
+        `📋 New donation request from ${session.name || from}:\n"${fullDescription}"`
+      );
+    }
+    try {
+      await bapFetch('/api/trigger/donation-request', {
+        method: 'POST',
+        token: session.token,
+        body: {
+          description: fullDescription,
+          amount: parsed.amount,
+          deadline: parsed.deadline,
+          region: parsed.region,
+        },
+      });
+      return sendWhatsAppMessage(
+        from,
+        "Thanks! I've sent your request to our team and to the NGO covering your region. I'll message you here as soon as they respond or complete the donation."
+      );
+    } catch (err) {
+      console.error('[wa-bot] failed to trigger NGO donation request:', err.message);
+      return sendWhatsAppMessage(
+        from,
+        "I've noted your request for our team, but I had trouble reaching the NGO system just now -- I'll keep trying and let you know here."
+      );
+    }
+  }
+
+  // Genuinely unclear -- ask again rather than guess, keeping
+  // everything gathered so far so nothing gets lost.
+  session.donationFullDescription = fullDescription;
+  session.donationParsedDetails = parsed;
+  session.awaitingDonorChoice = true;
+  return sendWhatsAppMessage(
+    from,
+    'Sorry, just to make sure I do the right thing -- would you like (1) donor contact info, or (2) a formal request raised with the NGO and our team? Let me know which.'
+  );
 }
 
 async function respondDonorList(from, session) {
