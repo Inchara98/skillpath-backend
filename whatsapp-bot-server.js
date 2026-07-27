@@ -547,7 +547,12 @@ Currently looking at this donor's profile: ${viewingDonor}
 
 Community spaces recently shown to them:
 ${spacesList}
-Currently looking at this space's profile: ${viewingSpace}`;
+Currently looking at this space's profile: ${viewingSpace}
+
+The last thing YOU (the bot) said to them, immediately before their current message:
+"${context.lastBotMessage || '(nothing yet)'}"
+
+If their current message is a follow-up question about what you just said (e.g. asking what a tracking ID means, or "is that required", or anything else that only makes sense in light of your last message), treat it as "general_question" and put a clear restatement of what they're actually asking -- referencing your last message directly -- in "freeText", so it can be answered correctly instead of misfiring as unclear.`;
 
   const raw = await callClaude(routerPrompt, message, { maxTokens: 300 });
   const cleaned = raw.replace(/```json|```/g, '').trim();
@@ -604,6 +609,7 @@ async function handleConversationalFlow(from, trimmed, session) {
     viewingDonor: session.viewingDonor || null,
     spaces: session.lastSpaceList || [],
     viewingSpace: session.viewingSpace || null,
+    lastBotMessage: session.lastBotMessage || '',
   };
   const decision = await classifyConversation(trimmed, context);
 
@@ -1218,6 +1224,12 @@ function sleep(ms) {
 // ---- sending WhatsApp replies via Meta's Graph API ----
 
 async function sendWhatsAppMessage(to, text) {
+  // Track the last thing we said to this phone number, so the intent
+  // classifier can resolve follow-up questions like "is that my support
+  // ID?" against what was actually just said, instead of guessing blind.
+  const s = sessions.get(to);
+  if (s) s.lastBotMessage = text;
+
   if (!WA_TOKEN || !WA_PHONE_NUMBER_ID) {
     console.warn('[wa-bot] WA_TOKEN/WA_PHONE_NUMBER_ID not set -- skipping real send. Would have sent:', text);
     return;
