@@ -840,82 +840,57 @@ Use an empty string for anything not mentioned. Do not include any other text, e
   }
 }
 
-// Decides whether the detail given so far is actually specific enough
-// to act on (some concrete idea of what's needed, plus a rough
-// timeframe) -- rather than just accepting whatever comes back. If not,
-// it also writes the natural follow-up question itself, so the
-// conversation stays adaptive instead of repeating a canned prompt.
-async function assessDonationDetailSufficiency(text) {
-  const prompt = `A learner is raising a donation request and was asked what's needed and by when. Here is everything they've said so far, combined:
-"""
-${text}
-"""
-Decide if this gives enough concrete detail to actually act on -- ideally SOME specific idea of what's needed (an item, quantity, or amount) AND a rough timeframe/deadline (even an approximate one like "soon" or "this month" counts).
-Respond with ONLY a JSON object, nothing else, in exactly this shape:
-{"sufficient": true or false, "followUp": "a short, natural, friendly follow-up question asking specifically for whatever is missing -- empty string if sufficient"}`;
-  try {
-    const raw = await callClaude(prompt, text, { maxTokens: 200 });
-    const cleaned = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    return { sufficient: !!parsed.sufficient, followUp: parsed.followUp || '' };
-  } catch (err) {
-    console.error('[wa-bot] failed to assess donation detail sufficiency, proceeding anyway:', err.message);
-    return { sufficient: true, followUp: '' }; // fail open -- a classification hiccup shouldn't trap someone in a loop
-  }
-}
-
-// Step 2: they've now given some detail. If it's still too vague (e.g.
-// just repeating the original need with no item, amount, or timeframe),
-// ask a natural follow-up and stay in this same step rather than moving
-// on -- otherwise ask the choice: donor contact info, or a formal
-// request that also reaches the region's NGO directly.
+// Step 2: they've now given some detail. This is strict -- a real
+// amount/estimate AND a rough deadline are both required before the
+// request can be raised, since the NGO needs something concrete to
+// actually act on. Keeps asking, however many rounds it takes, but
+// always responds naturally to whatever the person actually said
+// (including pushback like "is it required?") rather than repeating a
+// canned question verbatim.
 async function respondDonationDetail(from, session, detailText) {
   const combined = `${session.donationDraftDescription || ''}\n${detailText}`.trim();
-  session.donationDetailAttempts = (session.donationDetailAttempts || 0) + 1;
+  const parsed = await extractDonationDetails(combined);
 
-  // Only ever ask ONE clarifying follow-up. Repeating a rephrased
-  // version of the same question feels robotic, not natural -- and
-  // someone who pushes back or can't give an exact figure should still
-  // be able to move forward with whatever they've given us.
-  if (session.donationDetailAttempts < 2) {
-    const assessment = await assessDonationDetailSufficiency(combined);
-    if (!assessment.sufficient) {
-      session.donationDraftDescription = combined;
-      return sendWhatsAppMessage(
-        from,
-        assessment.followUp || "Could you share a bit more detail -- specifically what's needed and roughly by when?"
-      );
-    }
+  const missing = [];
+  if (!parsed.amount) missing.push('roughly how much or what specifically is needed');
+  if (!parsed.deadline) missing.push('roughly when it\'s needed by');
+
+  if (missing.length > 0) {
+    session.donationDraftDescription = combined;
+    const followUp = await generateDetailFollowUp(detailText, missing);
+    return sendWhatsAppMessage(from, followUp);
   }
 
   session.awaitingDonationDetail = false;
   session.donationDraftDescription = null;
-  session.donationDetailAttempts = 0;
   session.donationFullDescription = combined;
-  session.donationParsedDetails = await extractDonationDetails(combined);
+  session.donationParsedDetails = parsed;
   session.awaitingDonorChoice = true;
-
-  const acknowledgment = await generateDetailAcknowledgment(detailText);
   return sendWhatsAppMessage(
     from,
-    `${acknowledgment} Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?`
+    "Thanks! Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?"
   );
 }
 
-// Writes a short, natural one-line acknowledgment of whatever the
-// person just said, so moving on (even without full detail) doesn't
-// feel like their message was ignored -- e.g. if they asked whether
-// details are actually required, this answers that directly instead of
-// silently skipping past it.
-async function generateDetailAcknowledgment(lastMessage) {
-  const prompt = `The person was asked what's needed for a donation request and by when. Their reply was: "${lastMessage}"
-Write ONE short, warm, natural sentence acknowledging their reply before moving the conversation forward. If their reply was a question (like asking whether exact details are required), answer it briefly and reassuringly -- exact figures aren't required, we can proceed with whatever they've shared. Otherwise just briefly acknowledge what they said. Output ONLY that one sentence, nothing else, no quotation marks.`;
+// Writes the actual follow-up message when something's still missing.
+// Directly answers any question in their last message (e.g. "is it
+// required?" gets a real yes/no, not a dodge) before restating exactly
+// what's still needed -- so repeated rounds still feel like a real
+// conversation instead of a broken record.
+async function generateDetailFollowUp(lastMessage, missing) {
+  const prompt = `A learner is raising a donation request. They still haven't given: ${missing.join(' and ')}.
+Their last message was: "${lastMessage}"
+Write ONE short, warm, natural WhatsApp message that:
+- If their last message was a question (e.g. asking whether these details are actually required), answers it honestly and directly -- yes, this is needed so the NGO has something concrete to act on.
+- Otherwise just briefly acknowledges what they said.
+- Then clearly asks for exactly what's still missing: ${missing.join(' and ')}.
+Keep it to 1-2 sentences, friendly and natural, not robotic or repetitive. Output ONLY the message itself, nothing else, no quotation marks.`;
   try {
-    const raw = await callClaude(prompt, lastMessage, { maxTokens: 60 });
+    const raw = await callClaude(prompt, lastMessage, { maxTokens: 100 });
     return raw.trim();
   } catch (err) {
-    console.error('[wa-bot] failed to generate detail acknowledgment, using a generic one:', err.message);
-    return "No worries, we can proceed with what you've shared so far.";
+    console.error('[wa-bot] failed to generate detail follow-up, using a generic one:', err.message);
+    return `Thanks for sharing that -- I do still need ${missing.join(' and ')} so the NGO can act on this. Could you share that?`;
   }
 }
 
