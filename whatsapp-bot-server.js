@@ -925,13 +925,13 @@ async function respondDonorChoice(from, session, replyText) {
       });
       return sendWhatsAppMessage(
         from,
-        "Thanks! I've sent your request to our team and to the NGO covering your region. I'll message you here as soon as they respond or complete the donation."
+        `Thanks! Your request (${reqId}) has been sent to our team and to the NGO covering your region. I'll message you here as soon as they respond or complete the donation. You can mention ${reqId} if you ever need to follow up on it.`
       );
     } catch (err) {
       console.error('[wa-bot] failed to trigger NGO donation request:', err.message);
       return sendWhatsAppMessage(
         from,
-        "I've noted your request for our team, but I had trouble reaching the NGO system just now -- I'll keep trying and let you know here."
+        `I've noted your request (${reqId}) for our team, but I had trouble reaching the NGO system just now -- I'll keep trying and let you know here.`
       );
     }
   }
