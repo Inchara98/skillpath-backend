@@ -894,10 +894,29 @@ async function respondDonationDetail(from, session, detailText) {
   session.donationFullDescription = combined;
   session.donationParsedDetails = await extractDonationDetails(combined);
   session.awaitingDonorChoice = true;
+
+  const acknowledgment = await generateDetailAcknowledgment(detailText);
   return sendWhatsAppMessage(
     from,
-    "Thanks. Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?"
+    `${acknowledgment} Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?`
   );
+}
+
+// Writes a short, natural one-line acknowledgment of whatever the
+// person just said, so moving on (even without full detail) doesn't
+// feel like their message was ignored -- e.g. if they asked whether
+// details are actually required, this answers that directly instead of
+// silently skipping past it.
+async function generateDetailAcknowledgment(lastMessage) {
+  const prompt = `The person was asked what's needed for a donation request and by when. Their reply was: "${lastMessage}"
+Write ONE short, warm, natural sentence acknowledging their reply before moving the conversation forward. If their reply was a question (like asking whether exact details are required), answer it briefly and reassuringly -- exact figures aren't required, we can proceed with whatever they've shared. Otherwise just briefly acknowledge what they said. Output ONLY that one sentence, nothing else, no quotation marks.`;
+  try {
+    const raw = await callClaude(prompt, lastMessage, { maxTokens: 60 });
+    return raw.trim();
+  } catch (err) {
+    console.error('[wa-bot] failed to generate detail acknowledgment, using a generic one:', err.message);
+    return "No worries, we can proceed with what you've shared so far.";
+  }
 }
 
 // Narrow, deliberate classification for this specific yes/no-ish
