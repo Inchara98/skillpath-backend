@@ -152,6 +152,13 @@ function getSession(phone) {
       awaitingPeerSelection: false,
       viewingPeer: null,
       lastPeerList: [],
+      // Same idea for donors and spaces -- just conversation context so
+      // the router can resolve "tell me more about X" / "connect me
+      // with them" against whatever was shown most recently.
+      lastDonorList: [],
+      viewingDonor: null,
+      lastSpaceList: [],
+      viewingSpace: null,
     });
   }
   return sessions.get(phone);
@@ -472,24 +479,39 @@ async function classifyConversation(message, context) {
   const peersList = context.peers.length
     ? context.peers.map((p) => `- ${p.name} (${p.tier || 'tier unknown'}${p.area ? ', ' + p.area : ''})`).join('\n')
     : '(none shown yet)';
+  const donorsList = context.donors.length
+    ? context.donors.map((d) => `- ${d.name} (${d.supportType || 'support type unknown'})`).join('\n')
+    : '(none shown yet)';
+  const spacesList = context.spaces.length
+    ? context.spaces.map((s) => `- ${s.name} (${s.spaceType || 'type unknown'}${s.area ? ', ' + s.area : ''})`).join('\n')
+    : '(none shown yet)';
   const viewing = context.viewingPeer ? context.viewingPeer.name : 'none';
+  const viewingDonor = context.viewingDonor ? context.viewingDonor.name : 'none';
+  const viewingSpace = context.viewingSpace ? context.viewingSpace.name : 'none';
 
-  const routerPrompt = `You are the conversation router for a WhatsApp bot helping early learning practitioners and parents in South Africa (the Bana Pele program) access training and peer support.
+  const routerPrompt = `You are the conversation router for a WhatsApp bot helping early learning practitioners and parents in South Africa (the Bana Pele program) access training, funding/donor support, community spaces, and peer support.
 
 Output ONLY a single JSON object, nothing else -- no code fences, no extra text. Shape:
 {"intent": "...", "reference": "..." or null, "freeText": "..." or null}
 
 Valid intents:
 - "greeting" -- a hello/hi/starting the conversation, with no other specific request
+- "program_question" -- a general question about the Bana Pele program itself, registration steps, eCares, or how the program works for them (not about a specific course, peer, donor, or space). Put their exact message in "freeText".
 - "show_courses" -- wants to see available training programs
 - "enroll_course" -- wants to enroll/join/sign up for a specific course. Put the course name or reference (e.g. "the first one", "child safety") in "reference".
 - "check_status" -- wants to know their own enrollment/progress/tier
 - "mark_complete" -- says they finished/completed a course. Put the course reference in "reference".
-- "centre_help_request" -- describing a PERSONAL need for help setting up/improving THEIR OWN learning centre (not a general question about the topic). Put their exact message in "freeText".
-- "peer_list" -- wants to see/browse peers or people who could support them
+- "donor_list" -- looking for monetary/donation/funding/nutrition/food support, or an agency/donor that could help their centre or a child in their care
+- "view_donor" -- asking about ONE SPECIFIC donor/agency (by name or reference). Put the reference in "reference".
+- "connect_donor" -- wants contact info / to connect with a specific donor. Put the reference in "reference" (null if clearly referring to whoever they're currently viewing).
+- "space_list" -- looking for a place/venue/space to host an event, meeting, or activity (e.g. churches, halls, community spaces)
+- "view_space" -- asking about ONE SPECIFIC space/venue (by name or reference). Put the reference in "reference".
+- "connect_space" -- wants contact info / to connect with whoever manages a specific space. Put the reference in "reference" (null if clearly referring to whoever they're currently viewing).
+- "peer_list" -- wants to see/browse peers or practitioners who could support them
 - "view_peer" -- asking about ONE SPECIFIC peer (by name, tier, or reference like "the second one"). Put the reference in "reference".
 - "connect_peer" -- wants to connect/talk/reach out to a specific peer, or is confirming they want to connect with whoever they were just told about. Put the reference in "reference" (null if clearly referring to whoever they're currently viewing).
-- "general_question" -- a genuine informational question (funding, requirements, ECD advice, etc.), not about their own account or a specific peer. Put their exact message in "freeText".
+- "support_request" -- describing ANY OTHER personal need for support at their centre that doesn't clearly fit the categories above (e.g. "I want to make my play area safer", staffing help, general operational problems). Put their exact message in "freeText".
+- "general_question" -- a genuine informational question not covered by the above and not about their own account. Put their exact message in "freeText".
 - "unclear" -- genuinely can't tell what they want from this message
 
 Current context for this person:
@@ -498,8 +520,15 @@ ${coursesList}
 
 Peers recently shown to them:
 ${peersList}
+Currently looking at this peer's profile: ${viewing}
 
-Currently looking at this peer's profile: ${viewing}`;
+Donors/agencies recently shown to them:
+${donorsList}
+Currently looking at this donor's profile: ${viewingDonor}
+
+Community spaces recently shown to them:
+${spacesList}
+Currently looking at this space's profile: ${viewingSpace}`;
 
   const raw = await callClaude(routerPrompt, message, { maxTokens: 300 });
   const cleaned = raw.replace(/```json|```/g, '').trim();
@@ -534,6 +563,10 @@ async function handleConversationalFlow(from, trimmed, session) {
     courses: session.lastCourses || [],
     peers: session.lastPeerList || [],
     viewingPeer: session.viewingPeer || null,
+    donors: session.lastDonorList || [],
+    viewingDonor: session.viewingDonor || null,
+    spaces: session.lastSpaceList || [],
+    viewingSpace: session.viewingSpace || null,
   };
   const decision = await classifyConversation(trimmed, context);
 
@@ -541,8 +574,10 @@ async function handleConversationalFlow(from, trimmed, session) {
     case 'greeting':
       return sendWhatsAppMessage(
         from,
-        "Hi there! 😊 I'm here to help you with training programs, checking your progress, setting up a learning centre, or connecting with a peer for support. What can I help you with today?"
+        "Hi there! 😊 I'm here to help with training programs, funding/donor connections, community spaces, peer support, and general Bana Pele questions. What can I help you with today?"
       );
+    case 'program_question':
+      return respondGeneralQuestion(from, decision.freeText || trimmed);
     case 'show_courses':
       return respondShowCourses(from, session);
     case 'enroll_course':
@@ -551,21 +586,33 @@ async function handleConversationalFlow(from, trimmed, session) {
       return respondCheckStatus(from, session);
     case 'mark_complete':
       return respondMarkComplete(from, session, decision.reference);
-    case 'centre_help_request':
-      return respondCentreHelpRequest(from, session, decision.freeText || trimmed);
+    case 'donor_list':
+      return respondDonorList(from, session);
+    case 'view_donor':
+      return respondViewDonor(from, session, decision.reference);
+    case 'connect_donor':
+      return respondConnectContact(from, session, decision.reference, 'donor');
+    case 'space_list':
+      return respondSpaceList(from, session);
+    case 'view_space':
+      return respondViewSpace(from, session, decision.reference);
+    case 'connect_space':
+      return respondConnectContact(from, session, decision.reference, 'space');
     case 'peer_list':
       return respondPeerList(from, session);
     case 'view_peer':
       return respondViewPeer(from, session, decision.reference);
     case 'connect_peer':
       return respondConnectPeer(from, session, decision.reference);
+    case 'support_request':
+      return respondSupportRequest(from, session, decision.freeText || trimmed);
     case 'general_question':
       return respondGeneralQuestion(from, decision.freeText || trimmed);
     case 'unclear':
     default:
       return sendWhatsAppMessage(
         from,
-        "I want to make sure I help with the right thing -- are you looking for training programs, checking your status, help setting up a learning centre, or connecting with a peer for support?"
+        "I want to make sure I help with the right thing -- are you looking for training programs, funding/donor support, a community space, connecting with a peer, or something else?"
       );
   }
 }
@@ -620,7 +667,7 @@ async function respondMarkComplete(from, session, reference) {
   return sendWhatsAppMessage(from, `Marked "${course.name}" as complete ✅ — sent to the training authority for approval.`);
 }
 
-async function respondCentreHelpRequest(from, session, description) {
+async function respondSupportRequest(from, session, description) {
   const reqId = nextCentreRequestId();
   const newRequest = {
     id: reqId,
@@ -643,6 +690,91 @@ async function respondCentreHelpRequest(from, session, description) {
     console.warn('[wa-bot] ADMIN_PHONE not set -- new centre request created but nobody was notified:', reqId);
   }
   return sendWhatsAppMessage(from, "Thanks! We've noted what you need help with, and someone from our team will reach out here soon.");
+}
+
+async function respondDonorList(from, session) {
+  const donorList = await discoverDonors(session.token);
+  session.lastDonorList = donorList;
+  session.viewingDonor = null;
+  if (donorList.length === 0) return sendWhatsAppMessage(from, "There aren't any donors or support agencies listed yet -- check back soon!");
+  const lines = donorList.map((d) => `- ${d.name} (${d.supportType || 'support type not specified'})`).join('\n');
+  return sendWhatsAppMessage(from, `Here are some donors/agencies that may be able to help:\n\n${lines}\n\nJust tell me who you'd like to know more about, or ask me to connect you with one of them!`);
+}
+
+async function respondViewDonor(from, session, reference) {
+  let donor = resolveReference(reference, session.lastDonorList, (d) => d.name);
+  if (!donor) {
+    const donorList = await discoverDonors(session.token);
+    session.lastDonorList = donorList;
+    donor = resolveReference(reference, donorList, (d) => d.name);
+  }
+  if (!donor) return sendWhatsAppMessage(from, "I'm not sure which donor/agency you mean -- want me to show you the list again?");
+  session.viewingDonor = donor;
+  const lines = [`${donor.name}`];
+  if (donor.supportType) lines.push(`Support type: ${donor.supportType}`);
+  if (donor.area) lines.push(`Area: ${donor.area}`);
+  if (donor.description) lines.push(donor.description);
+  lines.push('', "Just let me know if you'd like their contact details, or ask me about someone else!");
+  return sendWhatsAppMessage(from, lines.join('\n'));
+}
+
+async function respondSpaceList(from, session) {
+  const spaceList = await discoverSpaces(session.token);
+  session.lastSpaceList = spaceList;
+  session.viewingSpace = null;
+  if (spaceList.length === 0) return sendWhatsAppMessage(from, "There aren't any community spaces listed yet -- check back soon!");
+  const lines = spaceList.map((s) => `- ${s.name} (${s.spaceType || 'type not specified'}${s.area ? ', ' + s.area : ''})`).join('\n');
+  return sendWhatsAppMessage(from, `Here are some spaces you could use:\n\n${lines}\n\nJust tell me which one you'd like to know more about, or ask me to connect you with them!`);
+}
+
+async function respondViewSpace(from, session, reference) {
+  let space = resolveReference(reference, session.lastSpaceList, (s) => s.name);
+  if (!space) {
+    const spaceList = await discoverSpaces(session.token);
+    session.lastSpaceList = spaceList;
+    space = resolveReference(reference, spaceList, (s) => s.name);
+  }
+  if (!space) return sendWhatsAppMessage(from, "I'm not sure which space you mean -- want me to show you the list again?");
+  session.viewingSpace = space;
+  const lines = [`${space.name}`];
+  if (space.spaceType) lines.push(`Type: ${space.spaceType}`);
+  if (space.area) lines.push(`Area: ${space.area}`);
+  if (space.address) lines.push(`Address: ${space.address}`);
+  if (space.capacity) lines.push(`Capacity: ${space.capacity}`);
+  if (space.availability) lines.push(`Availability: ${space.availability}`);
+  lines.push('', "Just let me know if you'd like their contact details, or ask me about somewhere else!");
+  return sendWhatsAppMessage(from, lines.join('\n'));
+}
+
+// Donors and spaces aren't WhatsApp bot users like peers are -- they're
+// provider-entered directory listings with their own contact details
+// already attached. "Connecting" just means handing those details over
+// directly, not starting a live in-bot chat.
+async function respondConnectContact(from, session, reference, kind) {
+  const isDonor = kind === 'donor';
+  const list = isDonor ? session.lastDonorList : session.lastSpaceList;
+  const viewing = isDonor ? session.viewingDonor : session.viewingSpace;
+  let entry = resolveReference(reference, list, (x) => x.name);
+  if (!entry && viewing) entry = viewing;
+  if (!entry) {
+    const fresh = isDonor ? await discoverDonors(session.token) : await discoverSpaces(session.token);
+    if (isDonor) session.lastDonorList = fresh;
+    else session.lastSpaceList = fresh;
+    entry = resolveReference(reference, fresh, (x) => x.name);
+  }
+  if (!entry) {
+    return sendWhatsAppMessage(from, `I'm not sure which ${isDonor ? 'donor' : 'space'} you mean -- want me to show you the list again?`);
+  }
+  const contactLines = [`Here's how to reach ${entry.name}:`];
+  if (isDonor) {
+    if (entry.contactPhone) contactLines.push(`📞 ${entry.contactPhone}`);
+    if (entry.contactEmail) contactLines.push(`✉️ ${entry.contactEmail}`);
+  } else {
+    if (entry.contactName) contactLines.push(`Contact: ${entry.contactName}`);
+    if (entry.contactPhone) contactLines.push(`📞 ${entry.contactPhone}`);
+  }
+  if (contactLines.length === 1) contactLines.push("We don't have direct contact details on file yet -- our team can help facilitate an introduction instead.");
+  return sendWhatsAppMessage(from, contactLines.join('\n'));
 }
 
 async function respondPeerList(from, session) {
@@ -751,6 +883,23 @@ async function discoverPeers(token) {
   await sleep(900);
   const state = await bapFetch('/api/state', { token });
   return state.peerCatalog || [];
+}
+
+// Same idea again, for donors and community spaces -- both are
+// provider-managed directories course-bpp exposes via the same real
+// Beckn discover action, just a different category each time.
+async function discoverDonors(token) {
+  await bapFetch('/api/trigger/discover', { method: 'POST', token, body: { category: 'donors' } });
+  await sleep(900);
+  const state = await bapFetch('/api/state', { token });
+  return state.donorCatalog || [];
+}
+
+async function discoverSpaces(token) {
+  await bapFetch('/api/trigger/discover', { method: 'POST', token, body: { category: 'spaces' } });
+  await sleep(900);
+  const state = await bapFetch('/api/state', { token });
+  return state.spaceCatalog || [];
 }
 
 async function enrollInCourse(token, courseId) {
