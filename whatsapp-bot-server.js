@@ -921,6 +921,7 @@ async function respondDonorChoice(from, session, replyText) {
           amount: parsed.amount,
           deadline: parsed.deadline,
           region: parsed.region,
+          crId: reqId,
         },
       });
       return sendWhatsAppMessage(
@@ -1708,6 +1709,43 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', bapBaseUrl: BAP_BASE_URL }));
+    return;
+  }
+
+  // demo-bap calls this when the NGO accepts/pays a donation request, so
+  // the SAME dashboard entry gets updated instead of sitting as "new"
+  // forever even after the NGO has already acted on it. Matched by the
+  // CR tracking id generated when the request was first raised.
+  if (req.method === 'POST' && url.pathname === '/api/internal/update-request-status') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const { id, label } = parsed;
+      const request = centreRequests.find((r) => r.id === id);
+      if (!request) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'request not found' }));
+        return;
+      }
+      // Prefixing the description guarantees this is visible in the
+      // dashboard regardless of whether its UI has any special handling
+      // for a status value it doesn't already recognize.
+      if (!request.description.startsWith(`[${label}]`)) {
+        request.description = `[${label}] ${request.description}`;
+      }
+      if (label === 'NGO paid') request.status = 'closed';
+      persistCentreRequest(request);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'updated', request }));
+    });
     return;
   }
 

@@ -397,6 +397,7 @@ async function triggerNgoDonation(learner, details) {
       amount: details.amount || '',
       deadline: details.deadline || '',
       region: details.region || '',
+      crId: details.crId || '',
     },
   };
 
@@ -440,6 +441,20 @@ async function notifyLearnerViaWhatsApp(phone, text) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phone, message: text }),
+  });
+}
+
+// Relays an NGO status change into the SAME dashboard entry the
+// Provider App already shows for this request (matched by the CR
+// tracking id whatsapp-bot generated when the request was first raised)
+// -- otherwise the dashboard would keep showing "new" forever even
+// after the NGO has already accepted or paid.
+async function updateDashboardRequestStatus(crId, label) {
+  if (!crId) return;
+  await fetch(`${WA_BOT_BASE_URL}/api/internal/update-request-status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: crId, label }),
   });
 }
 
@@ -533,10 +548,13 @@ function handleCallback(action, incoming) {
   if (action === 'on_update' && message.requestId) {
     const statusCode = message.status && message.status.code;
     let text = null;
+    let dashboardLabel = null;
     if (statusCode === 'ACCEPTED') {
       text = '📋 Good news — an NGO has accepted your donation request and will be in touch soon.';
+      dashboardLabel = 'NGO accepted';
     } else if (statusCode === 'PAID') {
       text = '🎉 The NGO has completed the donation for your request!';
+      dashboardLabel = 'NGO paid';
     }
     if (text && learner.phone) {
       notifyLearnerViaWhatsApp(learner.phone, text).catch((err) =>
@@ -544,6 +562,11 @@ function handleCallback(action, incoming) {
       );
     } else if (text && !learner.phone) {
       console.error(`[demo-bap] got an NGO update for learner ${learner.id} but they have no phone on file -- can't notify them`);
+    }
+    if (dashboardLabel && message.crId) {
+      updateDashboardRequestStatus(message.crId, dashboardLabel).catch((err) =>
+        console.error('[demo-bap] failed to relay NGO update to the dashboard:', err.message)
+      );
     }
   }
 

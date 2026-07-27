@@ -81,6 +81,7 @@ function persistRequest(r) {
       amount: r.amount,
       deadline: r.deadline,
       region: r.region,
+      cr_id: r.crId,
       status: r.status,
       context: r.context,
       created_at: r.createdAt,
@@ -100,6 +101,7 @@ async function loadFromDatabase() {
       amount: row.amount,
       deadline: row.deadline,
       region: row.region,
+      crId: row.cr_id,
       status: row.status,
       context: row.context,
       createdAt: row.created_at,
@@ -205,7 +207,7 @@ const server = http.createServer(async (req, res) => {
     persistRequest(r);
     sendCallback({
       context: { ...r.context, action: 'on_update', timestamp: new Date().toISOString() },
-      message: { requestId: r.id, status: { code: 'ACCEPTED' } },
+      message: { requestId: r.id, crId: r.crId, status: { code: 'ACCEPTED' } },
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'updated', request: r }));
@@ -226,7 +228,7 @@ const server = http.createServer(async (req, res) => {
     persistRequest(r);
     sendCallback({
       context: { ...r.context, action: 'on_update', timestamp: new Date().toISOString() },
-      message: { requestId: r.id, status: { code: 'PAID' } },
+      message: { requestId: r.id, crId: r.crId, status: { code: 'PAID' } },
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'updated', request: r }));
@@ -265,6 +267,7 @@ const server = http.createServer(async (req, res) => {
         amount: donationRequest.amount || '',
         deadline: donationRequest.deadline || '',
         region: donationRequest.region || '',
+        crId: donationRequest.crId || '',
         status: 'requested',
         context: incoming.context,
         createdAt: new Date().toISOString(),
