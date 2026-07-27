@@ -169,6 +169,12 @@ function getSession(phone) {
       awaitingSupportDetail: false,
       awaitingSupportChoice: false,
       supportDraftDescription: null,
+      // Donation-request conversation state (NGO flow) -- same reasoning
+      // as the support-request state above, but the choice comes FIRST
+      // here: donor contact info vs a real request to the region's NGO.
+      awaitingDonorChoice: false,
+      awaitingDonationDetail: false,
+      donationDraftDescription: null,
     });
   }
   return sessions.get(phone);
@@ -580,6 +586,12 @@ async function handleConversationalFlow(from, trimmed, session) {
   if (session.awaitingSupportChoice) {
     return respondSupportChoice(from, session, trimmed);
   }
+  if (session.awaitingDonorChoice) {
+    return respondDonorChoice(from, session, trimmed);
+  }
+  if (session.awaitingDonationDetail) {
+    return respondDonationDetail(from, session, trimmed);
+  }
 
   const context = {
     courses: session.lastCourses || [],
@@ -609,7 +621,7 @@ async function handleConversationalFlow(from, trimmed, session) {
     case 'mark_complete':
       return respondMarkComplete(from, session, decision.reference);
     case 'donor_list':
-      return respondDonorList(from, session);
+      return respondDonorNeedStart(from, session, decision.freeText || trimmed);
     case 'view_donor':
       return respondViewDonor(from, session, decision.reference);
     case 'connect_donor':
@@ -787,6 +799,138 @@ async function respondSupportRequest(from, session, description) {
     console.warn('[wa-bot] ADMIN_PHONE not set -- new centre request created but nobody was notified:', reqId);
   }
   return sendWhatsAppMessage(from, "Thanks! We've noted what you need help with, and someone from our team will reach out here soon.");
+}
+
+// Step 1: someone's just described a donation need. Ask up front whether
+// they want donor contact info to reach out themselves, or want a real
+// request raised -- which now also reaches the region's NGO directly,
+// not just our own team.
+async function respondDonorNeedStart(from, session, initialDescription) {
+  session.donationDraftDescription = initialDescription;
+  session.awaitingDonorChoice = true;
+  return sendWhatsAppMessage(
+    from,
+    "I can help with that. Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?"
+  );
+}
+
+// Narrow, deliberate classification for this specific yes/no-ish
+// question -- same reasoning as classifySupportChoice: a wrong guess
+// here either drops a described need or sends someone down the wrong
+// path, so it's worth a small dedicated check rather than folding it
+// into the general router.
+async function classifyDonorChoice(message) {
+  const prompt = `The person was just asked: "Would you like donor contact info, or would you rather I raise a formal donation request to the NGO and our team?"
+Classify their reply as exactly one of these words, nothing else: show_donors, raise_request, unclear`;
+  try {
+    const raw = await callClaude(prompt, message, { maxTokens: 10 });
+    const cleaned = raw.trim().toLowerCase();
+    if (cleaned.includes('raise') || cleaned.includes('request')) return 'raise_request';
+    if (cleaned.includes('donor') || cleaned.includes('contact') || cleaned.includes('show')) return 'show_donors';
+    return 'unclear';
+  } catch (err) {
+    console.error('[wa-bot] donor-choice classification failed, defaulting to showing the donor list:', err.message);
+    return 'show_donors'; // safest fallback -- the least disruptive path
+  }
+}
+
+// Step 2: acts on their choice.
+async function respondDonorChoice(from, session, replyText) {
+  session.awaitingDonorChoice = false;
+  const description = session.donationDraftDescription || replyText;
+  session.donationDraftDescription = null;
+
+  const choice = await classifyDonorChoice(replyText);
+
+  if (choice === 'raise_request') {
+    session.donationDraftDescription = description;
+    session.awaitingDonationDetail = true;
+    return sendWhatsAppMessage(
+      from,
+      "Sure. Could you tell me exactly what's needed and by when? For example: \"shoes and bags for 15 students, needed by 15 August\" or \"donation of ₹5000 by 10 August\"."
+    );
+  }
+
+  if (choice === 'show_donors') {
+    return respondDonorList(from, session);
+  }
+
+  // Genuinely unclear -- ask again rather than guess, keeping the
+  // description around so nothing they told us gets lost.
+  session.donationDraftDescription = description;
+  session.awaitingDonorChoice = true;
+  return sendWhatsAppMessage(
+    from,
+    'Sorry, just to make sure I do the right thing -- would you like (1) donor contact info, or (2) a formal request raised with the NGO and our team? Let me know which.'
+  );
+}
+
+// Pulls a rough amount/deadline/region out of the person's free-form
+// detail message, for display in the NGO's own dashboard. Best-effort --
+// if extraction fails for any reason, the full raw text is still sent
+// through as the request description, so nothing gets lost either way.
+async function extractDonationDetails(text) {
+  const prompt = `Extract structured details from this donation request. Respond with ONLY a JSON object, nothing else, in exactly this shape:
+{"amount": "...", "deadline": "...", "region": "..."}
+Use an empty string for anything not mentioned. Do not include any other text, explanation, or markdown formatting.`;
+  try {
+    const raw = await callClaude(prompt, text, { maxTokens: 150 });
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      amount: parsed.amount || '',
+      deadline: parsed.deadline || '',
+      region: parsed.region || '',
+    };
+  } catch (err) {
+    console.error('[wa-bot] failed to extract donation details, sending raw text only:', err.message);
+    return { amount: '', deadline: '', region: '' };
+  }
+}
+
+// Step 3: they've now given the amount/deadline detail. This is the one
+// that actually reaches the NGO -- notifies our own team exactly like
+// before, AND starts a real Beckn transaction (init -> confirm) with the
+// NGO's own BPP via demo-bap. The NGO accepting or paying comes back
+// later as a separate WhatsApp message, relayed through demo-bap's
+// on_update handling -- not synchronously from this reply.
+async function respondDonationDetail(from, session, detailText) {
+  session.awaitingDonationDetail = false;
+  const description = session.donationDraftDescription || '';
+  session.donationDraftDescription = null;
+
+  const parsed = await extractDonationDetails(detailText);
+  const fullDescription = `${description}\n${detailText}`.trim();
+
+  if (ADMIN_PHONE) {
+    await sendWhatsAppMessage(
+      ADMIN_PHONE,
+      `📋 New donation request from ${session.name || from}:\n"${fullDescription}"`
+    );
+  }
+
+  try {
+    await bapFetch('/api/trigger/donation-request', {
+      method: 'POST',
+      token: session.token,
+      body: {
+        description: fullDescription,
+        amount: parsed.amount,
+        deadline: parsed.deadline,
+        region: parsed.region,
+      },
+    });
+    return sendWhatsAppMessage(
+      from,
+      "Thanks! I've sent your request to our team and to the NGO covering your region. I'll message you here as soon as they respond or complete the donation."
+    );
+  } catch (err) {
+    console.error('[wa-bot] failed to trigger NGO donation request:', err.message);
+    return sendWhatsAppMessage(
+      from,
+      "I've noted your request for our team, but I had trouble reaching the NGO system just now -- I'll keep trying and let you know here."
+    );
+  }
 }
 
 async function respondDonorList(from, session) {
@@ -1550,6 +1694,44 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', bapBaseUrl: BAP_BASE_URL }));
+    return;
+  }
+
+  // demo-bap calls this to relay an on_update push (NGO accepted/paid)
+  // into an actual WhatsApp message -- this bot owns the only real
+  // connection to the Meta API, so demo-bap can't send messages itself.
+  // Not authenticated -- this is server-to-server on a private network
+  // (Render's internal routing / same trust boundary as the rest of
+  // this demo); revisit if this ever needs to be exposed more broadly.
+  if (req.method === 'POST' && url.pathname === '/api/internal/notify') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const { phone, message } = parsed;
+      if (!phone || !message) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'phone and message are both required' }));
+        return;
+      }
+      sendWhatsAppMessage(phone, message)
+        .then(() => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'sent' }));
+        })
+        .catch((err) => {
+          console.error('[wa-bot] failed to relay internal notify:', err.message);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+    });
     return;
   }
 
