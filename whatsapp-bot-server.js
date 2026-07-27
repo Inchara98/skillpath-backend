@@ -839,12 +839,48 @@ Use an empty string for anything not mentioned. Do not include any other text, e
   }
 }
 
-// Step 2: they've now given the detail. NOW ask the choice -- donor
-// contact info to reach out themselves, or a formal request that also
-// reaches the region's NGO directly.
+// Decides whether the detail given so far is actually specific enough
+// to act on (some concrete idea of what's needed, plus a rough
+// timeframe) -- rather than just accepting whatever comes back. If not,
+// it also writes the natural follow-up question itself, so the
+// conversation stays adaptive instead of repeating a canned prompt.
+async function assessDonationDetailSufficiency(text) {
+  const prompt = `A learner is raising a donation request and was asked what's needed and by when. Here is everything they've said so far, combined:
+"""
+${text}
+"""
+Decide if this gives enough concrete detail to actually act on -- ideally SOME specific idea of what's needed (an item, quantity, or amount) AND a rough timeframe/deadline (even an approximate one like "soon" or "this month" counts).
+Respond with ONLY a JSON object, nothing else, in exactly this shape:
+{"sufficient": true or false, "followUp": "a short, natural, friendly follow-up question asking specifically for whatever is missing -- empty string if sufficient"}`;
+  try {
+    const raw = await callClaude(prompt, text, { maxTokens: 200 });
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return { sufficient: !!parsed.sufficient, followUp: parsed.followUp || '' };
+  } catch (err) {
+    console.error('[wa-bot] failed to assess donation detail sufficiency, proceeding anyway:', err.message);
+    return { sufficient: true, followUp: '' }; // fail open -- a classification hiccup shouldn't trap someone in a loop
+  }
+}
+
+// Step 2: they've now given some detail. If it's still too vague (e.g.
+// just repeating the original need with no item, amount, or timeframe),
+// ask a natural follow-up and stay in this same step rather than moving
+// on -- otherwise ask the choice: donor contact info, or a formal
+// request that also reaches the region's NGO directly.
 async function respondDonationDetail(from, session, detailText) {
-  session.awaitingDonationDetail = false;
   const combined = `${session.donationDraftDescription || ''}\n${detailText}`.trim();
+
+  const assessment = await assessDonationDetailSufficiency(combined);
+  if (!assessment.sufficient) {
+    session.donationDraftDescription = combined;
+    return sendWhatsAppMessage(
+      from,
+      assessment.followUp || "Could you share a bit more detail -- specifically what's needed and roughly by when?"
+    );
+  }
+
+  session.awaitingDonationDetail = false;
   session.donationDraftDescription = null;
   session.donationFullDescription = combined;
   session.donationParsedDetails = await extractDonationDetails(combined);
