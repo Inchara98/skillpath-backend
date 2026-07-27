@@ -895,12 +895,6 @@ async function respondDonorChoice(from, session, replyText) {
   }
 
   if (choice === 'raise_request') {
-    if (ADMIN_PHONE) {
-      await sendWhatsAppMessage(
-        ADMIN_PHONE,
-        `📋 New donation request from ${session.name || from}:\n"${fullDescription}"`
-      );
-    }
     try {
       await bapFetch('/api/trigger/donation-request', {
         method: 'POST',
