@@ -1800,13 +1800,16 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: 'request not found' }));
         return;
       }
-      // Prefixing the description guarantees this is visible in the
-      // dashboard regardless of whether its UI has any special handling
-      // for a status value it doesn't already recognize.
-      if (!request.description.startsWith(`[${label}]`)) {
-        request.description = `[${label}] ${request.description}`;
+      // Appending (not prepending) means multiple tags read in
+      // chronological order over time -- e.g. "...torn [NGO accepted]
+      // [NGO paid]" -- giving a visible history rather than replacing
+      // or reversing the sequence. Deliberately NOT touching `status`
+      // here -- setting it to 'closed' made the entry vanish from the
+      // dashboard's default view entirely, which is the opposite of
+      // what's wanted: a visible history, not a disappearing request.
+      if (!request.description.includes(`[${label}]`)) {
+        request.description = `${request.description} [${label}]`;
       }
-      if (label === 'NGO paid') request.status = 'closed';
       persistCentreRequest(request);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'updated', request }));
