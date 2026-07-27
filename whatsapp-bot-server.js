@@ -159,6 +159,16 @@ function getSession(phone) {
       viewingDonor: null,
       lastSpaceList: [],
       viewingSpace: null,
+      // Multi-step support-request conversation state -- in-memory only,
+      // same reasoning as everything else above. A support request now
+      // takes 2 back-and-forth turns before anything gets logged: first
+      // we ask for more detail, then we ask whether they want it raised
+      // as a formal request or want to be connected with a peer/volunteer
+      // instead, so it feels like talking to a person rather than filling
+      // in a form one message at a time.
+      awaitingSupportDetail: false,
+      awaitingSupportChoice: false,
+      supportDraftDescription: null,
     });
   }
   return sessions.get(phone);
@@ -559,6 +569,18 @@ function resolveReference(reference, list, nameOf) {
 }
 
 async function handleConversationalFlow(from, trimmed, session) {
+  // ---- Mid-flow support-request follow-ups take priority over normal
+  // intent classification -- we're already in a specific conversation,
+  // so we handle the reply deterministically rather than re-routing it
+  // through the general classifier (which has no reliable way to know
+  // "yes, log it" or "connect me with someone" means in this context).
+  if (session.awaitingSupportDetail) {
+    return respondSupportDetail(from, session, trimmed);
+  }
+  if (session.awaitingSupportChoice) {
+    return respondSupportChoice(from, session, trimmed);
+  }
+
   const context = {
     courses: session.lastCourses || [],
     peers: session.lastPeerList || [],
@@ -605,7 +627,7 @@ async function handleConversationalFlow(from, trimmed, session) {
     case 'connect_peer':
       return respondConnectPeer(from, session, decision.reference);
     case 'support_request':
-      return respondSupportRequest(from, session, decision.freeText || trimmed);
+      return respondSupportRequestStart(from, session, decision.freeText || trimmed);
     case 'general_question':
       return respondGeneralQuestion(from, decision.freeText || trimmed);
     case 'unclear':
@@ -665,6 +687,81 @@ async function respondMarkComplete(from, session, reference) {
   if (!course) return sendWhatsAppMessage(from, "I'm not sure which course you mean -- could you tell me its name, or ask me to check your status first?");
   await markComplete(session.token, course.id);
   return sendWhatsAppMessage(from, `Marked "${course.name}" as complete ✅ — sent to the training authority for approval.`);
+}
+
+// Step 1 of the support-request conversation: someone's just described a
+// need in passing. Instead of logging it immediately off one message, ask
+// them to actually explain the situation, like a person would.
+async function respondSupportRequestStart(from, session, initialDescription) {
+  session.supportDraftDescription = initialDescription;
+  session.awaitingSupportDetail = true;
+  return sendWhatsAppMessage(
+    from,
+    "I'm sorry you're dealing with that. Can you tell me a bit more -- what's actually going on, how long has it been an issue, and what kind of help would make the biggest difference right now?"
+  );
+}
+
+// Step 2: they've now explained the situation in more detail. Rather than
+// silently filing it, ask them directly whether they want it raised as a
+// formal request for the team, or would rather be connected with a peer/
+// volunteer who might be able to help them right away.
+async function respondSupportDetail(from, session, detailText) {
+  session.awaitingSupportDetail = false;
+  const combined = `${session.supportDraftDescription}\n\nMore detail: ${detailText}`;
+  session.supportDraftDescription = combined;
+  session.awaitingSupportChoice = true;
+  return sendWhatsAppMessage(
+    from,
+    "Thanks for explaining that. Would you like me to log this as a formal request so our team can follow up, or would you rather I connect you directly with a peer or volunteer who might be able to help right away?"
+  );
+}
+
+// Classifies a free-form reply to the question above. Kept as a tiny,
+// separate Claude call (not folded into the main router) since this is a
+// narrow yes/no-ish decision with only 2 real outcomes, and a wrong guess
+// here either silently drops a described problem or sends someone into
+// the wrong flow -- worth being deliberate and cheap to check.
+async function classifySupportChoice(message) {
+  const prompt = `The person was just asked: "Would you like me to log this as a formal request, or would you rather I connect you with a peer/volunteer instead?"
+Classify their reply as exactly one of these words, nothing else: log_request, connect_volunteer, unclear`;
+  try {
+    const raw = await callClaude(prompt, message, { maxTokens: 10 });
+    const cleaned = raw.trim().toLowerCase();
+    if (cleaned.includes('connect')) return 'connect_volunteer';
+    if (cleaned.includes('log')) return 'log_request';
+    return 'unclear';
+  } catch (err) {
+    console.error('[wa-bot] support-choice classification failed, defaulting to logging the request:', err.message);
+    return 'log_request'; // safest fallback -- never silently lose a described problem
+  }
+}
+
+// Step 3: acts on their choice. "Connect with a volunteer" reuses the
+// existing, already-working peer-connect flow -- a volunteer/peer is the
+// same underlying concept in this system, so there's no need for a
+// separate mechanism.
+async function respondSupportChoice(from, session, replyText) {
+  session.awaitingSupportChoice = false;
+  const description = session.supportDraftDescription || replyText;
+  session.supportDraftDescription = null;
+
+  const choice = await classifySupportChoice(replyText);
+
+  if (choice === 'connect_volunteer') {
+    return respondPeerList(from, session);
+  }
+  if (choice === 'log_request') {
+    return respondSupportRequest(from, session, description);
+  }
+
+  // Genuinely unclear -- ask again rather than guess, keeping the
+  // description around so nothing they already told us gets lost.
+  session.supportDraftDescription = description;
+  session.awaitingSupportChoice = true;
+  return sendWhatsAppMessage(
+    from,
+    'Sorry, just to make sure I do the right thing -- would you like me to (1) log this as a request for our team, or (2) connect you with a peer/volunteer? Just let me know which one.'
+  );
 }
 
 async function respondSupportRequest(from, session, description) {
