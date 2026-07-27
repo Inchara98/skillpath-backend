@@ -792,10 +792,10 @@ const server = http.createServer((req, res) => {
 
   // onix-bpp calls a path like /api/webhook/select, /api/webhook/init,
   // /api/webhook/confirm -- the action name is the last part of the URL.
-  const webhookMatch = path.match(/^\/api\/webhook\/([a-zA-Z_]+)$/);
+  const webhookMatch = req.url.match(/^\/api\/webhook\/([a-zA-Z_]+)$/);
 
   if (req.method !== 'POST' || !webhookMatch) {
-    console.log(`[course-bpp] rejecting request -- path was "${path}"`);
+    console.log(`[course-bpp] rejecting request -- path was "${req.url}"`);
     res.writeHead(404);
     res.end();
     return;
