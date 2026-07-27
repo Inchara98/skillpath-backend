@@ -1,9 +1,14 @@
 {
-  "name": "demo-bap",
+  "name": "skillpath-backend",
   "version": "1.0.0",
-  "description": "Demo BAP: frontend + backend for practitioner course enrollment demo",
-  "main": "server.js",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start:bap": "node demo-bap-server.js",
+    "start:bpp": "node course-bpp-server.js",
+    "start:whatsapp-bot": "node whatsapp-bot-server.js",
+    "start:ngo-bpp": "node ngo-bpp-server.js"
   }
 }
