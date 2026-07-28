@@ -196,9 +196,8 @@ function DonationRequestReview({ realId }: { realId: string }) {
           </div>
 
           <div className="rounded-xl bg-violet-50 ring-1 ring-violet-100 p-6">
-            <p className="flex items-center gap-2 text-xs font-bold tracking-wide text-violet-600 mb-2">
-              <LightningIcon className="h-4 w-4" />
-              REQUEST SUMMARY
+            <p className="text-xs font-bold tracking-wide text-violet-600 mb-2">
+              REQUEST DETAILS
             </p>
             <p className="text-violet-900">{request.description}</p>
           </div>
