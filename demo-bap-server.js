@@ -559,10 +559,10 @@ function handleCallback(action, incoming) {
     let text = null;
     let dashboardLabel = null;
     if (statusCode === 'ACCEPTED') {
-      text = '📋 Good news — a support organisation has accepted your donation request and will be in touch soon.';
+      text = `📋 Good news — a support organisation has accepted your donation request${message.crId ? ` (${message.crId})` : ''} and will be in touch soon.`;
       dashboardLabel = 'NGO accepted';
     } else if (statusCode === 'PAID') {
-      text = '🎉 The support organisation has completed the donation for your request!';
+      text = `🎉 The support organisation has completed the donation for your request${message.crId ? ` (${message.crId})` : ''}!`;
       dashboardLabel = 'NGO paid';
     }
     if (text && learner.phone) {
