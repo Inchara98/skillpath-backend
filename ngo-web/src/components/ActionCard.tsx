@@ -70,9 +70,14 @@ export function ActionCard({ item }: { item: ActionItem }) {
 
         <div className="flex sm:flex-col items-center sm:items-end gap-2 sm:gap-1 shrink-0">
           {item.completed ? (
-            <span className="flex items-center gap-1.5 rounded-full bg-teal-50 text-teal-700 px-4 py-2 text-sm font-bold whitespace-nowrap">
-              <CheckCircleIcon className="h-4 w-4" /> Completed
-            </span>
+            <div className="flex flex-col items-center sm:items-end gap-1">
+              <span className="flex items-center gap-1.5 rounded-full bg-teal-50 text-teal-700 px-4 py-2 text-sm font-bold whitespace-nowrap">
+                <CheckCircleIcon className="h-4 w-4" /> Completed
+              </span>
+              <Link to={`/actions/${item.id}`} className="text-sm font-semibold text-violet-600 hover:text-violet-700">
+                See details →
+              </Link>
+            </div>
           ) : hasReviewPage ? (
             <Link to={`/actions/${item.id}`} className={buttonClassName}>
               {item.buttonLabel} <span aria-hidden="true">›</span>
