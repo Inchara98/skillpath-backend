@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { DonationRequest } from '../lib/ngoRequestsApi'
 import { acceptDonationRequest, markDonationRequestPaid } from '../lib/ngoRequestsApi'
 import { CheckCircleIcon } from './icons'
+import { FakePaymentModal } from './FakePaymentModal'
 
 const STATUS_META: Record<DonationRequest['status'], { label: string; className: string }> = {
   requested: { label: 'New request', className: 'bg-violet-100 text-violet-700' },
@@ -19,6 +20,7 @@ export function DonationRequestCard({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showPayment, setShowPayment] = useState(false)
   const status = STATUS_META[request.status]
 
   async function handleAccept() {
@@ -34,7 +36,11 @@ export function DonationRequestCard({
     }
   }
 
-  async function handleMarkPaid() {
+  // The actual API call only happens once the fake payment animation
+  // finishes (see FakePaymentModal's onDone) -- clicking "Pay Now" just
+  // opens the modal, it doesn't mark anything paid by itself.
+  async function handlePaymentDone() {
+    setShowPayment(false)
     setBusy(true)
     setError(null)
     try {
@@ -85,11 +91,11 @@ export function DonationRequestCard({
         {request.status === 'accepted' && (
           <button
             type="button"
-            onClick={handleMarkPaid}
+            onClick={() => setShowPayment(true)}
             disabled={busy}
             className="flex items-center gap-1 rounded-full bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white px-4 py-2 text-sm font-bold whitespace-nowrap"
           >
-            {busy ? 'Working…' : 'Mark as paid'}
+            {busy ? 'Working…' : 'Pay Now'}
           </button>
         )}
         {request.status === 'paid' && (
@@ -98,6 +104,10 @@ export function DonationRequestCard({
           </span>
         )}
       </div>
+
+      {showPayment && (
+        <FakePaymentModal amount={request.amount} onDone={handlePaymentDone} onClose={() => setShowPayment(false)} />
+      )}
     </div>
   )
 }
