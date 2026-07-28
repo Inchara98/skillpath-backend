@@ -59,7 +59,7 @@ export function donationRequestToActionItem(r: DonationRequest): ActionItem {
     priority: STATUS_PRIORITY[r.status],
     completed: isPaid,
     completedNote: isPaid
-      ? `Donation of ${r.amount ? `₹${r.amount}` : 'the requested amount'} completed${r.deadline ? ` — needed by ${r.deadline}` : ''}`
+      ? `Donation of ${r.amount ? `R${r.amount}` : 'the requested amount'} completed${r.deadline ? ` — needed by ${r.deadline}` : ''}`
       : undefined,
   }
 }

@@ -819,7 +819,7 @@ async function respondDonorNeedStart(from, session, initialDescription) {
   session.awaitingDonationDetail = true;
   return sendWhatsAppMessage(
     from,
-    "I can help with that. Could you tell me exactly what's needed and by when? For example: \"shoes and bags for 15 students, needed by 15 August\" or \"donation of ₹5000 by 10 August\"."
+    "I can help with that. Could you tell me exactly what's needed and by when? For example: \"shoes and bags for 15 students, needed by 15 August\" or \"donation of R5000 by 10 August\"."
   );
 }
 
@@ -835,7 +835,7 @@ async function extractDonationDetails(text) {
   const prompt = `This is a conversation transcript from someone raising a donation request -- it may include several back-and-forth messages, some of which are just asides or questions (like asking whether these details are required), not part of the actual need. Respond with ONLY a JSON object, nothing else, in exactly this shape:
 {"amount": "...", "deadline": "...", "region": "...", "description": "..."}
 - amount/deadline/region: empty string if not mentioned.
-- description: ONE clean, concise sentence summarizing what's actually needed -- ignore conversational asides, meta-questions, or filler. Just the real request, e.g. "Shoes and bags for 3 students, ₹10000 needed by 1 August."
+- description: ONE clean, concise sentence summarizing what's actually needed -- ignore conversational asides, meta-questions, or filler. Just the real request, e.g. "Shoes and bags for 3 students, R10000 needed by 1 August."
 Do not include any other text, explanation, or markdown formatting.`;
   try {
     const raw = await callClaude(prompt, text, { maxTokens: 200 });

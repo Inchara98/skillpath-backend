@@ -207,7 +207,7 @@ function DonationRequestReview({ realId }: { realId: string }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
               <div>
                 <p className="text-sm text-gray-400">Amount requested</p>
-                <p className="font-semibold text-gray-900 mt-0.5">{request.amount ? `₹${request.amount}` : 'Not specified'}</p>
+                <p className="font-semibold text-gray-900 mt-0.5">{request.amount ? `R${request.amount}` : 'Not specified'}</p>
               </div>
               <div>
                 <p className="text-sm text-gray-400">Needed by</p>

@@ -59,6 +59,14 @@ export function ActionsPage() {
   // reference-design mock content.
   const allItems = [...donationItems, ...mockActionItems]
 
+  // The "New support requests" tile was a static mock number with no
+  // connection to real data -- add real new donation requests on top of
+  // the mock baseline so it actually reflects what's really new.
+  const newDonationCount = donationItems.filter((item) => item.badges.some((b) => b.label === 'New request')).length
+  const displayedStatTiles = statTiles.map((tile) =>
+    tile.label === 'New support requests' ? { ...tile, value: tile.value + newDonationCount } : tile,
+  )
+
   const actionMatch = ACTION_TYPE_OPTIONS.find((o) => o.label === actionType)?.match ?? null
   const priorityMatch = PRIORITY_OPTIONS.find((o) => o.label === priority)?.match ?? null
 
@@ -74,7 +82,7 @@ export function ActionsPage() {
       <p className="text-gray-500 mt-1">What needs your attention, and what should you do next?</p>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-        {statTiles.map((tile) => (
+        {displayedStatTiles.map((tile) => (
           <StatTile key={tile.label} {...tile} />
         ))}
       </div>

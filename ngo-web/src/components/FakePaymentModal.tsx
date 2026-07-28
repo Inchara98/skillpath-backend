@@ -35,7 +35,7 @@ export function FakePaymentModal({
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 flex flex-col items-center text-center">
         {stage === 'scanning' && (
           <>
-            <p className="text-sm text-gray-500 mb-4">Scan to pay{amount ? ` · ₹${amount.replace(/[^\d.]/g, '')}` : ''}</p>
+            <p className="text-sm text-gray-500 mb-4">Scan to pay{amount ? ` · R${amount.replace(/[^\d.]/g, '')}` : ''}</p>
             <FakeQrCode />
             <div className="flex items-center gap-2 mt-5 text-sm text-gray-600">
               <span className="h-4 w-4 rounded-full border-2 border-violet-600 border-t-transparent animate-spin" />
@@ -53,7 +53,7 @@ export function FakePaymentModal({
               <CheckCircleIcon className="h-9 w-9" />
             </span>
             <p className="text-lg font-bold text-gray-900">Payment successful</p>
-            <p className="text-sm text-gray-500 mt-1">{amount ? `₹${amount.replace(/[^\d.]/g, '')} sent` : 'Donation sent'}</p>
+            <p className="text-sm text-gray-500 mt-1">{amount ? `R${amount.replace(/[^\d.]/g, '')} sent` : 'Donation sent'}</p>
           </>
         )}
       </div>
