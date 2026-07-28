@@ -1,9 +1,14 @@
 import { notifications } from '../data/mockDashboard'
 import { useExclusiveMenu } from '../lib/OpenMenuContext'
+import { useDonationAlerts } from '../lib/DonationAlertsContext'
 import { BellIcon } from './icons'
+import { useNavigate } from 'react-router-dom'
 
 export function NotificationsPanel() {
   const { ref, isOpen, toggle, close } = useExclusiveMenu()
+  const { newCount, justArrived } = useDonationAlerts()
+  const navigate = useNavigate()
+  const totalCount = newCount + notifications.length
 
   return (
     <div ref={ref} className="relative">
@@ -13,8 +18,8 @@ export function NotificationsPanel() {
         className="relative text-gray-500 hover:text-gray-700"
         aria-label="Notifications"
       >
-        <BellIcon className="h-6 w-6" />
-        {notifications.length > 0 && (
+        <BellIcon className={`h-6 w-6 ${justArrived ? 'bell-shake' : ''}`} />
+        {totalCount > 0 && (
           <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white" />
         )}
       </button>
@@ -23,14 +28,34 @@ export function NotificationsPanel() {
         <div className="absolute right-0 z-50 mt-3 w-80 max-w-[90vw] rounded-xl bg-white shadow-xl ring-1 ring-black/5">
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
               <p className="font-bold text-gray-900">Notifications</p>
-              {notifications.length > 0 && (
+              {totalCount > 0 && (
                 <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white">
-                  {notifications.length}
+                  {totalCount}
                 </span>
               )}
             </div>
 
             <ul>
+              {newCount > 0 && (
+                <li
+                  className="flex gap-3 px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50"
+                  onClick={() => {
+                    close()
+                    navigate('/actions')
+                  }}
+                >
+                  <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100">
+                    <BellIcon className="h-4 w-4 text-red-600" />
+                  </span>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                      {newCount} new donation {newCount === 1 ? 'request' : 'requests'}
+                      <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+                    </p>
+                    <p className="text-sm text-gray-500 mt-0.5">Raised over WhatsApp, awaiting review</p>
+                  </div>
+                </li>
+              )}
               {notifications.map((n) => (
                 <li key={n.id} className="flex gap-3 px-4 py-3 border-b border-gray-50 last:border-b-0">
                   <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100">
