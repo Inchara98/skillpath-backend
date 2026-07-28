@@ -881,7 +881,7 @@ async function respondDonationDetail(from, session, detailText) {
   session.awaitingDonorChoice = true;
   return sendWhatsAppMessage(
     from,
-    "Thanks! Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to your region's NGO and our team?"
+    "Thanks. Would you like me to share contact info for donors/agencies so you can reach out yourself, or would you rather I raise a formal request that goes straight to a support organisation in your region and our team?"
   );
 }
 
@@ -894,7 +894,7 @@ async function generateDetailFollowUp(lastMessage, missing) {
   const prompt = `A learner is raising a donation request. They still haven't given: ${missing.join(' and ')}.
 Their last message was: "${lastMessage}"
 Write ONE short, warm, natural WhatsApp message that:
-- If their last message was a question (e.g. asking whether these details are actually required), answers it honestly and directly -- yes, this is needed so the NGO has something concrete to act on.
+- If their last message was a question (e.g. asking whether these details are actually required), answers it honestly and directly -- yes, this is needed so the support organisation has something concrete to act on.
 - Otherwise just briefly acknowledges what they said.
 - Then clearly asks for exactly what's still missing: ${missing.join(' and ')}.
 Keep it to 1-2 sentences, friendly and natural, not robotic or repetitive. Output ONLY the message itself, nothing else, no quotation marks.`;
@@ -903,7 +903,7 @@ Keep it to 1-2 sentences, friendly and natural, not robotic or repetitive. Outpu
     return raw.trim();
   } catch (err) {
     console.error('[wa-bot] failed to generate detail follow-up, using a generic one:', err.message);
-    return `Thanks for sharing that -- I do still need ${missing.join(' and ')} so the NGO can act on this. Could you share that?`;
+    return `Thanks for sharing that -- I do still need ${missing.join(' and ')} so the support organisation can act on this. Could you share that?`;
   }
 }
 
@@ -913,7 +913,7 @@ Keep it to 1-2 sentences, friendly and natural, not robotic or repetitive. Outpu
 // path, so it's worth a small dedicated check rather than folding it
 // into the general router.
 async function classifyDonorChoice(message) {
-  const prompt = `The person was just asked: "Would you like donor contact info, or would you rather I raise a formal donation request to the NGO and our team?"
+  const prompt = `The person was just asked: "Would you like donor contact info, or would you rather I raise a formal donation request to a support organisation in your region and our team?"
 Classify their reply as exactly one of these words, nothing else: show_donors, raise_request, unclear`;
   try {
     const raw = await callClaude(prompt, message, { maxTokens: 10 });
@@ -978,13 +978,13 @@ async function respondDonorChoice(from, session, replyText) {
       });
       return sendWhatsAppMessage(
         from,
-        `Thanks! Your request (${reqId}) has been sent to our team and to the NGO covering your region. I'll message you here as soon as they respond or complete the donation. You can mention ${reqId} if you ever need to follow up on it.`
+        `Thanks! Your request (${reqId}) has been sent to our team and to a support organisation covering your region. I'll message you here as soon as they respond or complete the donation. You can mention ${reqId} if you ever need to follow up on it.`
       );
     } catch (err) {
       console.error('[wa-bot] failed to trigger NGO donation request:', err.message);
       return sendWhatsAppMessage(
         from,
-        `I've noted your request (${reqId}) for our team, but I had trouble reaching the NGO system just now -- I'll keep trying and let you know here.`
+        `I've noted your request (${reqId}) for our team, but I had trouble reaching the regional support system just now -- I'll keep trying and let you know here.`
       );
     }
   }
@@ -996,7 +996,7 @@ async function respondDonorChoice(from, session, replyText) {
   session.awaitingDonorChoice = true;
   return sendWhatsAppMessage(
     from,
-    'Sorry, just to make sure I do the right thing -- would you like (1) donor contact info, or (2) a formal request raised with the NGO and our team? Let me know which.'
+    'Sorry, just to make sure I do the right thing -- would you like (1) donor contact info, or (2) a formal request raised with a support organisation in your region and our team? Let me know which.'
   );
 }
 

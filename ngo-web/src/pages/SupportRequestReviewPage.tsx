@@ -266,7 +266,7 @@ function DonationRequestReview({ realId }: { realId: string }) {
                 disabled={busy}
                 className="rounded-full bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white py-2.5 text-sm font-bold"
               >
-                {busy ? 'Working…' : 'Assign my organisation'}
+                {busy ? 'Working…' : 'Accept request'}
               </button>
             )}
             {isAccepted && !isPaid && (
