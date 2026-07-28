@@ -1,7 +1,6 @@
 import { createBrowserRouter } from 'react-router-dom'
 import { LoginPage } from './pages/LoginPage'
 import { ActionsPage } from './pages/ActionsPage'
-import { DonationsPage } from './pages/DonationsPage'
 import { SupportRequestReviewPage } from './pages/SupportRequestReviewPage'
 import { SupportPage } from './pages/SupportPage'
 import { ActiveSupportDetailPage } from './pages/ActiveSupportDetailPage'
@@ -20,14 +19,6 @@ export const router = createBrowserRouter([
     element: (
       <RequireAuth>
         <ActionsPage />
-      </RequireAuth>
-    ),
-  },
-  {
-    path: '/donations',
-    element: (
-      <RequireAuth>
-        <DonationsPage />
       </RequireAuth>
     ),
   },

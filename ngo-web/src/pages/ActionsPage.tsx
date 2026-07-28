@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { DashboardLayout } from '../layouts/DashboardLayout'
 import { ActionCard } from '../components/ActionCard'
 import { StatTile } from '../components/StatTile'
 import { ComingUpPanel } from '../components/ComingUpPanel'
 import { AddSupportRequestModal } from '../components/AddSupportRequestModal'
 import { Dropdown } from '../components/Dropdown'
-import { actionItems, statTiles, type Priority } from '../data/mockDashboard'
+import { actionItems as mockActionItems, statTiles, type ActionItem, type Priority } from '../data/mockDashboard'
+import { fetchDonationRequests } from '../lib/ngoRequestsApi'
+import { donationRequestToActionItem } from '../lib/donationActionItem'
 
 const ACTION_TYPE_OPTIONS: { label: string; match: string | null }[] = [
   { label: 'All actions', match: null },
@@ -29,11 +31,34 @@ export function ActionsPage() {
   const [actionType, setActionType] = useState('All actions')
   const [priority, setPriority] = useState('All priorities')
   const [modalOpen, setModalOpen] = useState(false)
+  const [donationItems, setDonationItems] = useState<ActionItem[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    fetchDonationRequests()
+      .then((requests) => {
+        if (!cancelled) setDonationItems(requests.map(donationRequestToActionItem))
+      })
+      .catch((err) => {
+        // Fails quietly here -- the rest of the (mock) Actions Centre
+        // should still work even if the real backend is unreachable.
+        console.error('[ngo-web] failed to load donation requests for Actions Centre:', err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Real donation requests appear first (most recently raised at the
+  // top), ahead of the mock items -- same reasoning as everywhere else
+  // in this integration: real, live data takes priority over the
+  // reference-design mock content.
+  const allItems = [...donationItems, ...mockActionItems]
 
   const actionMatch = ACTION_TYPE_OPTIONS.find((o) => o.label === actionType)?.match ?? null
   const priorityMatch = PRIORITY_OPTIONS.find((o) => o.label === priority)?.match ?? null
 
-  const filtered = actionItems.filter((item) => {
+  const filtered = allItems.filter((item) => {
     if (actionMatch && !item.badges.some((b) => b.label === actionMatch)) return false
     if (priorityMatch && item.priority !== priorityMatch) return false
     return true

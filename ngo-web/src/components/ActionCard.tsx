@@ -48,7 +48,7 @@ function MetaLine({ meta }: { meta: string }) {
 }
 
 export function ActionCard({ item }: { item: ActionItem }) {
-  const hasReviewPage = Boolean(supportRequestDetails[item.id])
+  const hasReviewPage = item.id.startsWith('donation-') || Boolean(supportRequestDetails[item.id])
   const buttonClassName =
     'flex items-center gap-1 rounded-full bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 text-sm font-bold whitespace-nowrap'
 
