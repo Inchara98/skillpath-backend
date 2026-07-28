@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../lib/auth-context'
 import { NotificationsPanel } from '../components/NotificationsPanel'
+import { NewRequestToast } from '../components/NewRequestToast'
 import { DonationAlertsProvider, useDonationAlerts } from '../lib/DonationAlertsContext'
 import { BookIcon, ClipboardIcon, HouseIcon, LogOutIcon, MenuIcon, PlusIcon, ShieldIcon } from '../components/icons'
 
@@ -55,6 +56,7 @@ export function DashboardLayout({ children, onNewRequest }: { children: ReactNod
 
   return (
     <DonationAlertsProvider>
+      <NewRequestToast />
       <div className="h-screen overflow-hidden flex flex-col bg-gray-50">
         <header className="shrink-0 border-b border-gray-200 bg-white">
           <div className="flex h-[72px] items-center gap-3 px-4 md:px-6">

@@ -1,30 +1,45 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
-import { fetchDonationRequests } from './ngoRequestsApi'
+import { fetchDonationRequests, type DonationRequest } from './ngoRequestsApi'
 
 const POLL_INTERVAL_MS = 15000
-const SHAKE_DURATION_MS = 2500
+const TOAST_DURATION_MS = 6000
 
 interface DonationAlertsValue {
   // Requests that haven't been actioned yet (status requested or confirmed) --
   // this is the "unread" count shown next to My Actions Centre and on the
   // bell icon, same idea as an unread message count in WhatsApp itself.
   newCount: number
+  // The actual unread requests, newest first -- lets the UI deep-link
+  // straight to a specific request rather than just the general list.
+  newRequests: DonationRequest[]
   // True for a few seconds right after newCount increases -- used to
   // trigger the bell's shake animation exactly once per new arrival,
   // not continuously.
   justArrived: boolean
+  // The request(s) that triggered the most recent justArrived moment --
+  // used to populate the toast banner with something concrete to show
+  // and click through to, not just a generic "something changed" message.
+  latestArrival: DonationRequest[]
+  dismissToast: () => void
 }
 
-const DonationAlertsContext = createContext<DonationAlertsValue>({ newCount: 0, justArrived: false })
+const DonationAlertsContext = createContext<DonationAlertsValue>({
+  newCount: 0,
+  newRequests: [],
+  justArrived: false,
+  latestArrival: [],
+  dismissToast: () => {},
+})
 
 export function useDonationAlerts() {
   return useContext(DonationAlertsContext)
 }
 
 export function DonationAlertsProvider({ children }: { children: ReactNode }) {
-  const [newCount, setNewCount] = useState(0)
+  const [newRequests, setNewRequests] = useState<DonationRequest[]>([])
   const [justArrived, setJustArrived] = useState(false)
-  const previousCount = useRef<number | null>(null)
+  const [latestArrival, setLatestArrival] = useState<DonationRequest[]>([])
+  const previousIds = useRef<Set<string> | null>(null)
   const shakeTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -34,18 +49,25 @@ export function DonationAlertsProvider({ children }: { children: ReactNode }) {
       try {
         const requests = await fetchDonationRequests()
         if (cancelled) return
-        const unread = requests.filter((r) => r.status === 'requested' || r.status === 'confirmed').length
+        const unread = requests
+          .filter((r) => r.status === 'requested' || r.status === 'confirmed')
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        const currentIds = new Set(unread.map((r) => r.id))
 
-        // Only shake when the count goes UP from a known previous value --
-        // not on first load (nothing "just arrived", it was already there)
-        // and not when the count drops as requests get actioned.
-        if (previousCount.current !== null && unread > previousCount.current) {
-          setJustArrived(true)
-          if (shakeTimeout.current) clearTimeout(shakeTimeout.current)
-          shakeTimeout.current = setTimeout(() => setJustArrived(false), SHAKE_DURATION_MS)
+        // Only flag genuinely NEW arrivals (ids we haven't seen as unread
+        // before) -- not on first load, and not just because the set
+        // shrank when something got actioned.
+        if (previousIds.current !== null) {
+          const arrivals = unread.filter((r) => !previousIds.current!.has(r.id))
+          if (arrivals.length > 0) {
+            setLatestArrival(arrivals)
+            setJustArrived(true)
+            if (shakeTimeout.current) clearTimeout(shakeTimeout.current)
+            shakeTimeout.current = setTimeout(() => setJustArrived(false), TOAST_DURATION_MS)
+          }
         }
-        previousCount.current = unread
-        setNewCount(unread)
+        previousIds.current = currentIds
+        setNewRequests(unread)
       } catch (err) {
         console.error('[ngo-web] failed to poll for new donation requests:', err)
       }
@@ -61,6 +83,16 @@ export function DonationAlertsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <DonationAlertsContext.Provider value={{ newCount, justArrived }}>{children}</DonationAlertsContext.Provider>
+    <DonationAlertsContext.Provider
+      value={{
+        newCount: newRequests.length,
+        newRequests,
+        justArrived,
+        latestArrival,
+        dismissToast: () => setJustArrived(false),
+      }}
+    >
+      {children}
+    </DonationAlertsContext.Provider>
   )
 }

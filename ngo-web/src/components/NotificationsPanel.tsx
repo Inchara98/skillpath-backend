@@ -6,9 +6,9 @@ import { useNavigate } from 'react-router-dom'
 
 export function NotificationsPanel() {
   const { ref, isOpen, toggle, close } = useExclusiveMenu()
-  const { newCount, justArrived } = useDonationAlerts()
+  const { newRequests, justArrived } = useDonationAlerts()
   const navigate = useNavigate()
-  const totalCount = newCount + notifications.length
+  const totalCount = newRequests.length + notifications.length
 
   return (
     <div ref={ref} className="relative">
@@ -36,12 +36,13 @@ export function NotificationsPanel() {
             </div>
 
             <ul>
-              {newCount > 0 && (
+              {newRequests.map((r) => (
                 <li
+                  key={r.id}
                   className="flex gap-3 px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50"
                   onClick={() => {
                     close()
-                    navigate('/actions')
+                    navigate(`/actions/donation-${r.id}`)
                   }}
                 >
                   <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100">
@@ -49,13 +50,13 @@ export function NotificationsPanel() {
                   </span>
                   <div>
                     <p className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
-                      {newCount} new donation {newCount === 1 ? 'request' : 'requests'}
+                      New donation request{r.crId ? ` (${r.crId})` : ''}
                       <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
                     </p>
-                    <p className="text-sm text-gray-500 mt-0.5">Raised over WhatsApp, awaiting review</p>
+                    <p className="text-sm text-gray-500 mt-0.5 line-clamp-2">{r.description}</p>
                   </div>
                 </li>
-              )}
+              ))}
               {notifications.map((n) => (
                 <li key={n.id} className="flex gap-3 px-4 py-3 border-b border-gray-50 last:border-b-0">
                   <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100">

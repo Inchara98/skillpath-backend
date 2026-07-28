@@ -37,7 +37,11 @@ export function ActionsPage() {
     let cancelled = false
     fetchDonationRequests()
       .then((requests) => {
-        if (!cancelled) setDonationItems(requests.map(donationRequestToActionItem))
+        if (cancelled) return
+        const sorted = [...requests].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        )
+        setDonationItems(sorted.map(donationRequestToActionItem))
       })
       .catch((err) => {
         // Fails quietly here -- the rest of the (mock) Actions Centre
