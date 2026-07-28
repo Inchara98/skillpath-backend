@@ -26,6 +26,15 @@ const STATUS_PRIORITY: Record<DonationRequest['status'], Priority> = {
   paid: 'low',
 }
 
+// Displayed in place of the raw participantName/region from the backend
+// (which is always just "Learner" with a blank region, since the
+// WhatsApp flow doesn't collect a care centre name) -- fixed, consistent
+// with the fictional care centre/practitioner names already used
+// elsewhere in this demo (e.g. the test peer profiles) and with the
+// Review screen's own display.
+const DONATION_CARE_CENTRE = 'Happy Homes'
+const DONATION_REGION = 'Holly County, Sasolburg'
+
 function shortTitle(description: string): string {
   const firstSentence = description.split(/[.\n]/)[0].trim()
   return firstSentence.length > 70 ? `${firstSentence.slice(0, 67)}…` : firstSentence || 'Donation request'
@@ -33,10 +42,11 @@ function shortTitle(description: string): string {
 
 export function donationRequestToActionItem(r: DonationRequest): ActionItem {
   const status = STATUS_BADGE[r.status]
+  const isPaid = r.status === 'paid'
   return {
     id: `donation-${r.id}`,
-    org: r.participantName,
-    location: r.region || 'Region not specified',
+    org: DONATION_CARE_CENTRE,
+    location: DONATION_REGION,
     badges: [
       { label: status.label, className: status.className },
       ...(r.crId ? [{ label: r.crId, className: 'bg-gray-100 text-gray-600' }] : []),
@@ -47,5 +57,9 @@ export function donationRequestToActionItem(r: DonationRequest): ActionItem {
     timing: new Date(r.createdAt).toLocaleDateString(),
     buttonLabel: 'Review request',
     priority: STATUS_PRIORITY[r.status],
+    completed: isPaid,
+    completedNote: isPaid
+      ? `Donation of ${r.amount ? `₹${r.amount}` : 'the requested amount'} completed${r.deadline ? ` — needed by ${r.deadline}` : ''}`
+      : undefined,
   }
 }

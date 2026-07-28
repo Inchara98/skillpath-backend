@@ -140,6 +140,12 @@ export interface ActionItem {
   priority: Priority
   meta?: string
   chips?: string[]
+  // When true, the card shows a green checkmark + completedNote instead
+  // of a Review/action button -- nothing left to do, so nothing to
+  // click through to. Only ever set for real donation requests once
+  // fulfilled; every mock card leaves this unset.
+  completed?: boolean
+  completedNote?: string
 }
 
 const badgeStyles = {

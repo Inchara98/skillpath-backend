@@ -69,7 +69,11 @@ export function ActionCard({ item }: { item: ActionItem }) {
         </div>
 
         <div className="flex sm:flex-col items-center sm:items-end gap-2 sm:gap-1 shrink-0">
-          {hasReviewPage ? (
+          {item.completed ? (
+            <span className="flex items-center gap-1.5 rounded-full bg-teal-50 text-teal-700 px-4 py-2 text-sm font-bold whitespace-nowrap">
+              <CheckCircleIcon className="h-4 w-4" /> Completed
+            </span>
+          ) : hasReviewPage ? (
             <Link to={`/actions/${item.id}`} className={buttonClassName}>
               {item.buttonLabel} <span aria-hidden="true">›</span>
             </Link>
@@ -85,6 +89,11 @@ export function ActionCard({ item }: { item: ActionItem }) {
       <p className="font-bold text-gray-900 mt-3">{item.title}</p>
       <p className="text-sm text-gray-500">{item.category}</p>
       {item.description && <p className="text-sm text-gray-500 mt-1">{item.description}</p>}
+      {item.completed && item.completedNote && (
+        <p className="flex items-center gap-1.5 text-sm text-teal-700 mt-2">
+          <CheckCircleIcon className="h-4 w-4 shrink-0" /> {item.completedNote}
+        </p>
+      )}
       {item.meta && <MetaLine meta={item.meta} />}
 
       {item.chips && (
