@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom'
 import { useAuth } from '../lib/auth-context'
 import { NotificationsPanel } from '../components/NotificationsPanel'
 import { NewRequestToast } from '../components/NewRequestToast'
-import { DonationAlertsProvider, useDonationAlerts } from '../lib/DonationAlertsContext'
+import { useDonationAlerts } from '../lib/DonationAlertsContext'
 import { BookIcon, ClipboardIcon, HouseIcon, LogOutIcon, MenuIcon, PlusIcon, ShieldIcon } from '../components/icons'
 
 const NAV_ITEMS = [
@@ -55,7 +55,7 @@ export function DashboardLayout({ children, onNewRequest }: { children: ReactNod
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   return (
-    <DonationAlertsProvider>
+    <>
       <NewRequestToast />
       <div className="h-screen overflow-hidden flex flex-col bg-gray-50">
         <header className="shrink-0 border-b border-gray-200 bg-white">
@@ -123,6 +123,6 @@ export function DashboardLayout({ children, onNewRequest }: { children: ReactNod
           <main className="flex-1 min-w-0 overflow-y-auto px-4 py-6 md:px-8 md:py-8">{children}</main>
         </div>
       </div>
-    </DonationAlertsProvider>
+    </>
   )
 }

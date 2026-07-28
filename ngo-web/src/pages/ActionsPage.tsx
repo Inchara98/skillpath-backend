@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { DashboardLayout } from '../layouts/DashboardLayout'
 import { ActionCard } from '../components/ActionCard'
 import { StatTile } from '../components/StatTile'
 import { ComingUpPanel } from '../components/ComingUpPanel'
 import { AddSupportRequestModal } from '../components/AddSupportRequestModal'
 import { Dropdown } from '../components/Dropdown'
-import { actionItems as mockActionItems, statTiles, type ActionItem, type Priority } from '../data/mockDashboard'
-import { fetchDonationRequests } from '../lib/ngoRequestsApi'
+import { actionItems as mockActionItems, statTiles, type Priority } from '../data/mockDashboard'
+import { useDonationAlerts } from '../lib/DonationAlertsContext'
 import { donationRequestToActionItem } from '../lib/donationActionItem'
 
 const ACTION_TYPE_OPTIONS: { label: string; match: string | null }[] = [
@@ -31,27 +31,8 @@ export function ActionsPage() {
   const [actionType, setActionType] = useState('All actions')
   const [priority, setPriority] = useState('All priorities')
   const [modalOpen, setModalOpen] = useState(false)
-  const [donationItems, setDonationItems] = useState<ActionItem[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    fetchDonationRequests()
-      .then((requests) => {
-        if (cancelled) return
-        const sorted = [...requests].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        )
-        setDonationItems(sorted.map(donationRequestToActionItem))
-      })
-      .catch((err) => {
-        // Fails quietly here -- the rest of the (mock) Actions Centre
-        // should still work even if the real backend is unreachable.
-        console.error('[ngo-web] failed to load donation requests for Actions Centre:', err)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { allRequests } = useDonationAlerts()
+  const donationItems = allRequests.map(donationRequestToActionItem)
 
   // Real donation requests appear first (most recently raised at the
   // top), ahead of the mock items -- same reasoning as everywhere else

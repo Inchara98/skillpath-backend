@@ -5,6 +5,12 @@ const POLL_INTERVAL_MS = 15000
 const TOAST_DURATION_MS = 6000
 
 interface DonationAlertsValue {
+  // Every donation request, any status, newest first -- the single
+  // shared source of truth for the Actions Centre list, its stat tile,
+  // and anywhere else real donation data is shown. Polled the same way
+  // as newRequests below, so everything updates together automatically
+  // instead of each page fetching (and going stale) independently.
+  allRequests: DonationRequest[]
   // Requests that haven't been actioned yet (status requested or confirmed) --
   // this is the "unread" count shown next to My Actions Centre and on the
   // bell icon, same idea as an unread message count in WhatsApp itself.
@@ -24,6 +30,7 @@ interface DonationAlertsValue {
 }
 
 const DonationAlertsContext = createContext<DonationAlertsValue>({
+  allRequests: [],
   newCount: 0,
   newRequests: [],
   justArrived: false,
@@ -36,6 +43,7 @@ export function useDonationAlerts() {
 }
 
 export function DonationAlertsProvider({ children }: { children: ReactNode }) {
+  const [allRequests, setAllRequests] = useState<DonationRequest[]>([])
   const [newRequests, setNewRequests] = useState<DonationRequest[]>([])
   const [justArrived, setJustArrived] = useState(false)
   const [latestArrival, setLatestArrival] = useState<DonationRequest[]>([])
@@ -49,9 +57,10 @@ export function DonationAlertsProvider({ children }: { children: ReactNode }) {
       try {
         const requests = await fetchDonationRequests()
         if (cancelled) return
-        const unread = requests
-          .filter((r) => r.status === 'requested' || r.status === 'confirmed')
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        const sorted = [...requests].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        )
+        const unread = sorted.filter((r) => r.status === 'requested' || r.status === 'confirmed')
         const currentIds = new Set(unread.map((r) => r.id))
 
         // Only flag genuinely NEW arrivals (ids we haven't seen as unread
@@ -68,6 +77,7 @@ export function DonationAlertsProvider({ children }: { children: ReactNode }) {
         }
         previousIds.current = currentIds
         setNewRequests(unread)
+        setAllRequests(sorted)
       } catch (err) {
         console.error('[ngo-web] failed to poll for new donation requests:', err)
       }
@@ -85,6 +95,7 @@ export function DonationAlertsProvider({ children }: { children: ReactNode }) {
   return (
     <DonationAlertsContext.Provider
       value={{
+        allRequests,
         newCount: newRequests.length,
         newRequests,
         justArrived,
