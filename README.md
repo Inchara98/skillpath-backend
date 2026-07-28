@@ -45,6 +45,15 @@ Render **Static Site**: `https://skillpath-provider-web.onrender.com`. Its
 source lives in the separate Flutter monorepo (see below), not in this repo
 — only the built output (`provider-web/`) is committed here for deploy.
 
+**ngo-web** (`ngo-web/`) is a React + Vite + TypeScript SPA for NGO partner
+users — the counterpart to provider-web, but for NGOs instead of government
+users. Unlike provider-web, its full source lives in this repo. Not yet
+deployed — would also be a Render **Static Site** (Root Directory `ngo-web`,
+Build Command `npm install && npm run build`, Publish Directory `dist`,
+with `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` set in Render's
+Environment tab, since Vite bakes them into the build at build time, not
+read at runtime). URL: _pending first deploy_.
+
 ## Repos
 
 - **This repo** (`github.com/Inchara98/skillpath-backend`): the 3 backend
@@ -52,6 +61,38 @@ source lives in the separate Flutter monorepo (see below), not in this repo
 - **Flutter monorepo** (local only, not pushed anywhere yet):
   `~/skillpath-v3/skillpath/` — source for both Flutter apps (Bana Pele +
   National Skilling Authority) and the provider dashboard.
+
+## Role-separated auth (government vs NGO)
+
+`ngo-web` and `provider-web` share one Supabase Auth project, but a
+government account must never be able to sign into `ngo-web`, and an NGO
+account must never be able to sign into `provider-web`. This is enforced
+via a `profiles` table (`supabase/003_recreate_profiles_org_type.sql`) with
+an `org_type` column (`'government'` | `'ngo'`) and RLS restricting writes
+to the `service_role` key only — a signed-in user can read their own
+`org_type` but can never set or change it from the client SDK. Accounts are
+provisioned exclusively via `scripts/create-partner-user.mjs` (no public
+sign-up screen anywhere).
+
+`ngo-web`'s `src/lib/auth-context.tsx` implements the check: after
+`signInWithPassword` succeeds, it reads `profiles.org_type` for that user
+and immediately signs back out (rejecting the login) unless it equals
+`'ngo'`.
+
+**provider-web** (the Flutter app, source outside this repo) needs the
+mirror-image check wherever it currently calls Supabase Auth sign-in:
+after a successful `signInWithPassword`, query `profiles` for that user's
+`org_type`, and reject the sign-in (call `signOut()`, surface an error)
+unless it equals `'government'`. Same table, same RLS policy, opposite
+required value.
+
+**Known gap:** this only covers Supabase Auth/data accessed directly by
+the client SDK. `course-bpp-server.js` and `demo-bap-server.js` still use
+the `service_role` key for everything (bypasses RLS) and have no
+authorization on their provider-only endpoints — an NGO account could
+still call those HTTP endpoints directly, just not through either app's
+UI. Hardening those endpoints (JWT verification + `org_type` check per
+request) is a separate, not-yet-built follow-up.
 
 ## Database
 
@@ -128,7 +169,10 @@ each variable is for.
 
 Each of the 3 services is its own Render Web Service, auto-deploying on
 push to `main`. The provider dashboard is a separate Render **Static Site**
-serving the pre-built `provider-web/` folder.
+serving the pre-built `provider-web/` folder. ngo-web would be set up the
+same way as a Static Site, but building from source (Root Directory
+`ngo-web`, Build Command `npm install && npm run build`, Publish Directory
+`dist`) since — unlike provider-web — its source lives in this repo.
 
 Standard workflow for a code change made via Claude:
 1. Claude edits the file, presents it for download
