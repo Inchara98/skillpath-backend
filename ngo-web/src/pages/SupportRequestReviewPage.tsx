@@ -36,6 +36,15 @@ const DONATION_EXISTING_SUPPORT = [
 ]
 const DONATION_OVERLAP_NOTE = 'No overlap detected. No other partner is currently handling infrastructure support for this ELP.'
 
+// Displayed in place of the raw participantName/region from the backend
+// (which is always just "Learner" with a blank region, since the
+// WhatsApp flow doesn't collect a care centre name) -- fixed, consistent
+// with the fictional care centre/practitioner names already used
+// elsewhere in this demo (e.g. the test peer profiles).
+const DONATION_CARE_CENTRE = 'Happy Homes'
+const DONATION_REGION = 'Holly County, Sasolburg'
+const DONATION_PRACTITIONER = 'Naledi'
+
 export function SupportRequestReviewPage() {
   const { id } = useParams()
 
@@ -159,7 +168,7 @@ function DonationRequestReview({ realId }: { realId: string }) {
             <div className="flex flex-wrap items-center gap-4 mt-2 text-sm text-gray-500">
               <span className="flex items-center gap-1">
                 <LocationIcon className="h-4 w-4" />
-                {request.participantName} · {request.region || 'Region not specified'}
+                {DONATION_CARE_CENTRE} · {DONATION_REGION}
               </span>
               {request.crId && (
                 <span className="rounded-full px-2.5 py-0.5 text-xs font-semibold bg-gray-100 text-gray-600">
@@ -171,7 +180,7 @@ function DonationRequestReview({ realId }: { realId: string }) {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5 pt-5 border-t border-gray-100">
               <div>
                 <p className="text-sm text-gray-400">Practitioner</p>
-                <p className="font-semibold text-gray-900 mt-0.5">{request.participantName}</p>
+                <p className="font-semibold text-gray-900 mt-0.5">{DONATION_PRACTITIONER}</p>
               </div>
               <div>
                 <p className="text-sm text-gray-400">Date raised</p>
