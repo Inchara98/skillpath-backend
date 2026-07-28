@@ -2,10 +2,11 @@ import { useState, type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../lib/auth-context'
 import { NotificationsPanel } from '../components/NotificationsPanel'
-import { BookIcon, ClipboardIcon, HouseIcon, LogOutIcon, MenuIcon, PlusIcon, ShieldIcon } from '../components/icons'
+import { BookIcon, ClipboardIcon, HeartIcon, HouseIcon, LogOutIcon, MenuIcon, PlusIcon, ShieldIcon } from '../components/icons'
 
 const NAV_ITEMS = [
   { to: '/actions', label: 'My Actions Centre', icon: HouseIcon },
+  { to: '/donations', label: 'Donation Requests', icon: HeartIcon },
   { to: '/support', label: 'My Support', icon: ClipboardIcon },
   { to: '/elps', label: 'ELPs', icon: BookIcon },
 ]
