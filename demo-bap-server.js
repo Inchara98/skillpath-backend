@@ -462,7 +462,18 @@ async function updateDashboardRequestStatus(crId, label) {
 // learner via the transactionId embedded in the callback's own context.
 function handleCallback(action, incoming) {
   const incomingTransactionId = incoming.context && incoming.context.transactionId;
-  const learnerId = transactionToLearner.get(incomingTransactionId);
+  const message = incoming.message || {};
+
+  let learnerId = transactionToLearner.get(incomingTransactionId);
+  // Fall back to a direct participantId lookup for on_update specifically --
+  // this is what keeps accept/paid notifications working even after a
+  // restart wipes the in-memory transactionId->learner map (which was
+  // never persisted, unlike the learners themselves). ngo-bpp already
+  // knows the learner's real id and includes it directly, so there's no
+  // need to depend on the ephemeral mapping surviving that long.
+  if (!learnerId && action === 'on_update' && message.participantId) {
+    learnerId = message.participantId;
+  }
   const learner = learnerId && learners.get(learnerId);
   if (!learner) {
     console.error(`[demo-bap] received ${action} for unknown transaction ${incomingTransactionId} -- ignoring`);
@@ -470,8 +481,6 @@ function handleCallback(action, incoming) {
   }
 
   addLog(learner, 'received', action, incoming);
-
-  const message = incoming.message || {};
 
   if (action === 'on_discover' && message.catalogs) {
     const firstCatalog = message.catalogs[0];

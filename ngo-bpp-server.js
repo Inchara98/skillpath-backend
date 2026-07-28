@@ -207,7 +207,7 @@ const server = http.createServer(async (req, res) => {
     persistRequest(r);
     sendCallback({
       context: { ...r.context, action: 'on_update', timestamp: new Date().toISOString() },
-      message: { requestId: r.id, crId: r.crId, status: { code: 'ACCEPTED' } },
+      message: { requestId: r.id, crId: r.crId, participantId: r.participantId, status: { code: 'ACCEPTED' } },
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'updated', request: r }));
@@ -228,7 +228,7 @@ const server = http.createServer(async (req, res) => {
     persistRequest(r);
     sendCallback({
       context: { ...r.context, action: 'on_update', timestamp: new Date().toISOString() },
-      message: { requestId: r.id, crId: r.crId, status: { code: 'PAID' } },
+      message: { requestId: r.id, crId: r.crId, participantId: r.participantId, status: { code: 'PAID' } },
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'updated', request: r }));
