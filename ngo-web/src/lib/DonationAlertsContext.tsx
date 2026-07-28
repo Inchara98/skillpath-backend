@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { fetchDonationRequests, type DonationRequest } from './ngoRequestsApi'
 
-const POLL_INTERVAL_MS = 15000
+const POLL_INTERVAL_MS = 5000
 const TOAST_DURATION_MS = 6000
 
 interface DonationAlertsValue {
