@@ -520,7 +520,7 @@ Valid intents:
 - "enroll_course" -- wants to enroll/join/sign up for a specific course. Put the course name or reference (e.g. "the first one", "child safety") in "reference".
 - "check_status" -- wants to know their own enrollment/progress/tier
 - "mark_complete" -- says they finished/completed a course. Put the course reference in "reference".
-- "donor_list" -- looking for monetary/donation/funding/nutrition/food support, or an agency/donor that could help their centre or a child in their care
+- "donor_list" -- looking for monetary/donation/funding/nutrition/food support, or an agency/donor that could help their centre or a child in their care. This includes ANY mention of needing a donation, a specific amount of money, or funding for supplies -- even if phrased as a general need (e.g. "I want 5000 donation for books", "need funding for uniforms"). Prefer this over support_request whenever money, donation, or funding is mentioned at all.
 - "view_donor" -- asking about ONE SPECIFIC donor/agency (by name or reference). Put the reference in "reference".
 - "connect_donor" -- wants contact info / to connect with a specific donor. Put the reference in "reference" (null if clearly referring to whoever they're currently viewing).
 - "space_list" -- looking for a place/venue/space to host an event, meeting, or activity (e.g. churches, halls, community spaces)
@@ -529,7 +529,7 @@ Valid intents:
 - "peer_list" -- wants to see/browse peers or practitioners who could support them
 - "view_peer" -- asking about ONE SPECIFIC peer (by name, tier, or reference like "the second one"). Put the reference in "reference".
 - "connect_peer" -- wants to connect/talk/reach out to a specific peer, or is confirming they want to connect with whoever they were just told about. Put the reference in "reference" (null if clearly referring to whoever they're currently viewing).
-- "support_request" -- describing ANY OTHER personal need for support at their centre that doesn't clearly fit the categories above (e.g. "I want to make my play area safer", staffing help, general operational problems). Put their exact message in "freeText".
+- "support_request" -- describing ANY OTHER personal need for support at their centre that doesn't clearly fit the categories above and does NOT mention money, donation, or funding (e.g. "I want to make my play area safer", staffing help, general operational problems). If money or donation is mentioned at all, use donor_list instead. Put their exact message in "freeText".
 - "general_question" -- a genuine informational question not covered by the above and not about their own account. Put their exact message in "freeText".
 - "unclear" -- genuinely can't tell what they want from this message
 
