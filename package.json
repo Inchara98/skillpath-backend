@@ -9,6 +9,7 @@
     "start:bap": "node demo-bap-server.js",
     "start:bpp": "node course-bpp-server.js",
     "start:whatsapp-bot": "node whatsapp-bot-server.js",
-    "start:ngo-bpp": "node ngo-bpp-server.js"
+    "start:ngo-bpp": "node ngo-bpp-server.js",
+    "start:elevate-bpp": "node elevate-bpp-server.js"
   }
 }

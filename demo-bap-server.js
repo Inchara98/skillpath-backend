@@ -110,6 +110,13 @@ const NGO_BPP_CALLER = process.env.NGO_BPP_CALLER || 'http://localhost:3003/api/
 const NGO_BPP_ID = 'ngo.example.com';
 const NGO_BPP_URI = 'http://onix-ngo:8083/bpp/receiver';
 
+// ---- The Elevate BPP -- a third provider, this one generating
+// personalized learning journeys via Claude rather than handling
+// courses or donations.
+const ELEVATE_BPP_CALLER = process.env.ELEVATE_BPP_CALLER || 'http://localhost:3004/api/webhook';
+const ELEVATE_BPP_ID = 'elevate.example.com';
+const ELEVATE_BPP_URI = 'http://onix-elevate:8084/bpp/receiver';
+
 // Where whatsapp-bot-server.js is reachable -- used ONLY to relay an
 // on_update push (NGO accepted / paid) into an actual WhatsApp message,
 // since demo-bap itself has no way to send WhatsApp messages directly.
@@ -172,6 +179,7 @@ function persistLearner(learner) {
       peer_catalog: learner.peerCatalog,
       donor_catalog: learner.donorCatalog,
       space_catalog: learner.spaceCatalog,
+      journey: learner.journey,
       course_progress: learner.courseProgress,
       tier: learner.tier,
       log: learner.log,
@@ -271,6 +279,24 @@ function buildNgoContext(learner, action) {
     bapUri: BAP_URI,
     bppId: NGO_BPP_ID,
     bppUri: NGO_BPP_URI,
+    transactionId: learner.transactionId,
+    messageId: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    ttl: 'PT30S',
+  };
+}
+
+// Same shape again, addressed to the Elevate BPP -- a third, genuinely
+// independent provider.
+function buildElevateContext(learner, action) {
+  return {
+    networkId: NETWORK_ID,
+    action,
+    version: '2.0.0',
+    bapId: BAP_ID,
+    bapUri: BAP_URI,
+    bppId: ELEVATE_BPP_ID,
+    bppUri: ELEVATE_BPP_URI,
     transactionId: learner.transactionId,
     messageId: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
@@ -444,6 +470,58 @@ async function notifyLearnerViaWhatsApp(phone, text) {
   });
 }
 
+// Starts a real Beckn transaction with the Elevate BPP -- a third,
+// independent provider, same protocol as courses/donations. `details`
+// comes from whoever's calling (the PWA, eventually): { goal, timeframe,
+// currentTier, assessment }.
+async function triggerJourneyRequest(learner, details) {
+  learner.transactionId = crypto.randomUUID();
+  transactionToLearner.set(learner.transactionId, learner.id);
+
+  const context = buildElevateContext(learner, 'init');
+  const message = {
+    participant: { id: learner.id, name: learner.name || 'Learner' },
+    journeyRequest: {
+      goal: details.goal || '',
+      timeframe: details.timeframe || '',
+      currentTier: details.currentTier || '',
+      assessment: details.assessment || '',
+    },
+  };
+
+  const payload = { context, message };
+  addLog(learner, 'sent', 'init', payload);
+  persistLearner(learner);
+
+  const url = `${ELEVATE_BPP_CALLER}/init`;
+  console.log(`[demo-bap] sending journey init to: ${url}`);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  console.log(`[demo-bap] journey init response status: ${res.status}`);
+}
+
+// Finalizes the transaction once the Elevate BPP has acknowledged the
+// request with an id. The actual generated journey arrives later,
+// separately, via on_update -- generating it via Claude takes real
+// seconds, which is exactly why this needs the async pattern rather
+// than a synchronous reply.
+async function confirmJourneyRequest(learner) {
+  const context = buildElevateContext(learner, 'confirm');
+  const message = { requestId: learner.pendingJourneyRequestId };
+  const payload = { context, message };
+  addLog(learner, 'sent', 'confirm', payload);
+  persistLearner(learner);
+
+  await fetch(`${ELEVATE_BPP_CALLER}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 // Relays an NGO status change into the SAME dashboard entry the
 // Provider App already shows for this request (matched by the CR
 // tracking id whatsapp-bot generated when the request was first raised)
@@ -551,7 +629,25 @@ function handleCallback(action, incoming) {
       confirmNgoDonation(learner).catch((err) =>
         console.error('[demo-bap] failed to auto-confirm NGO donation request:', err.message)
       );
+    } else if (message.journeyRequest) {
+      // Same auto-confirm reasoning as donations -- the real result
+      // (the generated journey) arrives later via on_update, since
+      // generating it via Claude takes real seconds.
+      learner.pendingJourneyRequestId = message.requestId;
+      confirmJourneyRequest(learner).catch((err) =>
+        console.error('[demo-bap] failed to auto-confirm journey request:', err.message)
+      );
     }
+  }
+
+  if (action === 'on_update' && message.journey) {
+    // The generated journey is ready -- store it on the learner record
+    // so it's visible via /api/state, the same way catalog/peer/donor
+    // data already is. No WhatsApp relay for this one (yet) -- the PWA
+    // is expected to poll or eventually get its own push channel.
+    learner.journey = message.journey;
+    persistLearner(learner);
+    console.log(`[demo-bap] journey ready for learner ${learner.id}`);
   }
 
   if (action === 'on_update' && message.requestId) {
@@ -1306,6 +1402,7 @@ const server = http.createServer((req, res) => {
       peerCatalog: learner.peerCatalog,
       donorCatalog: learner.donorCatalog,
       spaceCatalog: learner.spaceCatalog,
+      journey: learner.journey,
       courseProgress: learner.courseProgress,
       tier: learner.tier,
       log: learner.log,
@@ -1320,6 +1417,34 @@ const server = http.createServer((req, res) => {
   // NGO BPP -- kept separate from the generic /api/trigger/:action
   // route above since the target BPP and message shape are both
   // different (donationRequest, not a course contract).
+  // Dedicated route for kicking off a real Beckn transaction with the
+  // Elevate BPP -- same reasoning as the donation-request route above:
+  // different target BPP, different message shape (journeyRequest).
+  if (req.method === 'POST' && path === '/api/trigger/journey-request') {
+    const learner = resolveLearner(req);
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      let extra = {};
+      try {
+        extra = body ? JSON.parse(body) : {};
+      } catch (err) {
+        // Ignore malformed/empty body.
+      }
+      triggerJourneyRequest(learner, extra)
+        .then(() => {
+          res.writeHead(202, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'sent' }));
+        })
+        .catch((err) => {
+          console.error('[demo-bap] failed to trigger journey request:', err.message, '| cause:', err.cause);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && path === '/api/trigger/donation-request') {
     const learner = resolveLearner(req);
     let body = '';
@@ -1418,6 +1543,7 @@ async function loadStateFromDb() {
       peerCatalog: row.peer_catalog,
       donorCatalog: row.donor_catalog,
       spaceCatalog: row.space_catalog,
+      journey: row.journey,
       courseProgress: row.course_progress || {},
       tier: row.tier || 'Bronze',
       log: row.log || [],
