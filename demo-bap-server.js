@@ -474,6 +474,30 @@ async function notifyLearnerViaWhatsApp(phone, text) {
 // independent provider, same protocol as courses/donations. `details`
 // comes from whoever's calling (the PWA, eventually): { goal, timeframe,
 // currentTier, assessment }.
+// Render's free tier spins services down after ~15 min idle -- the very
+// first request to a sleeping service sometimes gets a 502 from
+// Render's own gateway while the container is still starting, before
+// our code even runs. Retrying after a short wait (rather than failing
+// immediately, which is what was happening before) fixes this -- by
+// the second or third attempt, the service is almost always fully up.
+async function fetchWithColdStartRetry(url, options, attempts = 3, delayMs = 6000) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status !== 502 && res.status !== 503) return res;
+      lastErr = new Error(`Got ${res.status} (attempt ${i + 1}/${attempts})`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (i < attempts - 1) {
+      console.log(`[demo-bap] ${url} not ready yet, retrying in ${delayMs}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 async function triggerJourneyRequest(learner, details) {
   learner.transactionId = crypto.randomUUID();
   transactionToLearner.set(learner.transactionId, learner.id);
@@ -495,7 +519,7 @@ async function triggerJourneyRequest(learner, details) {
 
   const url = `${ELEVATE_BPP_CALLER}/init`;
   console.log(`[demo-bap] sending journey init to: ${url}`);
-  const res = await fetch(url, {
+  const res = await fetchWithColdStartRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -515,7 +539,7 @@ async function confirmJourneyRequest(learner) {
   addLog(learner, 'sent', 'confirm', payload);
   persistLearner(learner);
 
-  await fetch(`${ELEVATE_BPP_CALLER}/confirm`, {
+  await fetchWithColdStartRetry(`${ELEVATE_BPP_CALLER}/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
