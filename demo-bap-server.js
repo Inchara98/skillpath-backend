@@ -502,6 +502,13 @@ async function triggerJourneyRequest(learner, details) {
   learner.transactionId = crypto.randomUUID();
   transactionToLearner.set(learner.transactionId, learner.id);
 
+  // Clear any previous result immediately -- otherwise a poller checking
+  // "is learner.journey set yet?" would see the OLD one still sitting
+  // there and return it instantly, before this new request has even
+  // finished generating. Matters especially since every test currently
+  // shares one guest learner record.
+  learner.journey = null;
+
   const context = buildElevateContext(learner, 'init');
   const message = {
     participant: { id: learner.id, name: learner.name || 'Learner' },
