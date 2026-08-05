@@ -244,6 +244,47 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Quick, synchronous sufficiency check before committing to the full
+  // async journey generation -- same reasoning as the WhatsApp donation
+  // flow's strict detail-gathering: don't silently generate something
+  // generic from meaningless input ("aaaaa"), ask a real follow-up
+  // instead. Deliberately separate from the Beckn init/confirm/on_update
+  // flow below -- this is a fast, throwaway check, not a real
+  // transaction step.
+  if (req.method === 'POST' && req.url.startsWith('/api/elevate/validate-assessment')) {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid JSON' }));
+      return;
+    }
+    const { goal, currentTier, assessment } = body;
+    const prompt = `A practitioner is describing their current setup, as part of building a personalized certification journey.
+Goal: ${goal || 'not specified'}
+Current tier: ${currentTier || 'not specified'}
+Their description of their current setup: "${assessment || ''}"
+
+Decide if this description gives ANY genuine, real information about their actual situation (e.g. number of children, home-based vs a separate space, training so far, anything concrete) -- as opposed to being empty, gibberish, or meaningless filler.
+Respond with ONLY a JSON object, nothing else, in exactly this shape:
+{"sufficient": true or false, "followUp": "a short, warm, natural follow-up question asking for real detail -- empty string if sufficient"}`;
+    try {
+      const raw = await callClaude(prompt, assessment || '', 200);
+      const cleaned = raw.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleaned);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sufficient: !!parsed.sufficient, followUp: parsed.followUp || '' }));
+    } catch (err) {
+      console.error('[elevate-bpp] assessment validation failed, allowing it through:', err.message);
+      // Fail open -- a classification hiccup shouldn't block someone
+      // from ever completing the flow.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sufficient: true, followUp: '' }));
+    }
+    return;
+  }
+
   // Claims this journey request for a specific source (e.g. an AI
   // engine, or later a real alternate provider) -- same
   // first-come-first-served protection as ngo-bpp's donation claims.
